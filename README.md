@@ -20,6 +20,15 @@ your workspaces and panes branch off the sidebar.
   restores that tab's layout and focused pane; hidden terminals keep running.
   Select tabs by number, cycle panes in stable layout order, or focus a pane
   directly with directional shortcuts.
+- **Drag and drop**: drag a main tab to reorder it or move it to another
+  workspace's tab bar (including another window). Drop it at a pane's edge
+  to move its whole layout into that split. Drag a pane by its header to
+  rearrange splits, or drop it on a main tab bar to make it a tab. Drop on a
+  sidebar workspace row to move there as a main tab; hover over a workspace
+  or main tab while dragging to reveal its panes. Center drops move the item
+  to the destination workspace's main tab bar, never into nested pane tabs.
+  Running terminals and output stay intact; edge highlights and insertion
+  markers show where the item will land.
 - **Several windows**, each with its own sidebar, named and switchable from
   the sidebar. The window switcher (the name above the sidebar) lists open
   windows and **closed windows**: click one to go there or reopen it, and

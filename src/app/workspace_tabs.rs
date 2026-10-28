@@ -27,7 +27,7 @@ pub(super) fn add_main_tab(state: &App, workspace: Uuid, saved: &WorkspaceTab) {
     add_main_tab_layout(state, workspace, saved, &root);
 }
 
-fn add_main_tab_layout(
+pub(super) fn add_main_tab_layout(
     state: &App,
     workspace: Uuid,
     saved: &WorkspaceTab,
@@ -69,6 +69,7 @@ fn add_main_tab_layout(
     tab.last_focus
         .set(panes.get(saved.focused_pane).or(panes.first()));
     ws.tabs.borrow_mut().push(tab.clone());
+    layout_drag::install_main_tab_drag(state, &tab);
     let click = gtk::GestureClick::new();
     let (shared, holder, id) = (Rc::downgrade(&state.shared), ws.holder.downgrade(), tab.id);
     click.connect_released(move |_, _, _, _| {
@@ -247,6 +248,19 @@ pub(super) fn close_main_tab(state: &App, workspace: Uuid, id: Uuid) {
     if let Some(root) = tab.layout.first_child() {
         forget_tree(state, &root);
     }
+    remove_main_tab_ui(state, workspace, &ws, &tab, index);
+    if state.active.get() == Some(workspace) {
+        select_main_tab_id(state, workspace, ws.current_tab().id);
+    }
+}
+
+fn remove_main_tab_ui(
+    state: &App,
+    workspace: Uuid,
+    ws: &WorkspaceUi,
+    tab: &MainTabUi,
+    index: usize,
+) {
     ws.tab_strip.remove(&tab.button);
     ws.tab_stack.remove(&tab.layout);
     ws.tabs.borrow_mut().remove(index);
@@ -267,10 +281,49 @@ pub(super) fn close_main_tab(state: &App, workspace: Uuid, id: Uuid) {
     }
     let next = ws.current_tab();
     ws.tab_stack.set_visible_child(&next.layout);
-    refresh_main_tabs(&ws);
-    if state.active.get() == Some(workspace) {
-        select_main_tab_id(state, workspace, next.id);
-    }
+    refresh_main_tabs(ws);
+}
+
+/// Detaches a live layout without closing or recording any terminals.
+pub(super) fn take_main_tab(
+    state: &App,
+    workspace: Uuid,
+    id: Uuid,
+) -> Option<(gtk::Widget, WorkspaceTab)> {
+    let ws = state.workspaces.borrow().get(&workspace)?.clone();
+    let index = ws.tabs.borrow().iter().position(|tab| tab.id == id)?;
+    let tab = ws.tabs.borrow()[index].clone();
+    let root = tab.layout.first_child()?;
+    unzoom_around(state, &first_pane(&root)?);
+    let saved = main_tab_snapshot(state, &tab);
+    tab.layout.remove(&root);
+    remove_main_tab_ui(state, workspace, &ws, &tab, index);
+    Some((root, saved))
+}
+
+pub(super) fn reorder_main_tab(state: &App, workspace: Uuid, id: Uuid, before: Option<Uuid>) {
+    let Some(ws) = state.workspaces.borrow().get(&workspace).cloned() else {
+        return;
+    };
+    let mut tabs = ws.tabs.borrow_mut();
+    let Some(from) = tabs.iter().position(|tab| tab.id == id) else {
+        return;
+    };
+    let at = match before {
+        Some(before) => match tabs.iter().position(|tab| tab.id == before) {
+            Some(at) => at,
+            None => return,
+        },
+        None => tabs.len(),
+    };
+    let at = if from < at { at - 1 } else { at };
+    let tab = tabs.remove(from);
+    tabs.insert(at, tab.clone());
+    let previous = at.checked_sub(1).map(|index| tabs[index].button.clone());
+    ws.tab_strip
+        .reorder_child_after(&tab.button, previous.as_ref());
+    drop(tabs);
+    select_main_tab_id(state, workspace, id);
 }
 
 pub(super) fn cycle_pane(state: &App, delta: isize) {

@@ -23,6 +23,7 @@ use crate::theme::{self, TerminalTheme};
 
 mod actions;
 mod changes;
+mod layout_drag;
 mod panel;
 mod panes;
 mod persist;
@@ -130,6 +131,7 @@ struct Pane {
     stack: gtk::Stack,
     /// The tabs in the header.
     strip: gtk::Box,
+    drop_hint: gtk::Box,
 }
 
 impl Pane {
@@ -169,6 +171,7 @@ struct Shared {
     tabs: RefCell<HashMap<Uuid, Weak<Tab>>>,
     /// What the agents panels show now (see `panel::refresh`).
     agents_shown: RefCell<String>,
+    layout_drag: RefCell<layout_drag::LayoutDrag>,
 }
 
 impl Shared {
@@ -378,6 +381,7 @@ fn init_shared(app: &gtk::Application) -> Rc<Shared> {
         zoom: Cell::new(zoom),
         tabs: RefCell::default(),
         agents_shown: RefCell::default(),
+        layout_drag: RefCell::default(),
     });
     // The terminals' font with the zoom and window scale, before any opens.
     apply_settings(&shared);

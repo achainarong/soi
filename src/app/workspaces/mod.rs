@@ -56,6 +56,7 @@ pub(super) fn add_workspace_ui(state: &App, ws: &Workspace) {
             plan_panel: RefCell::new(None),
         }),
     );
+    layout_drag::install_tab_strip_drop(state, ws.id);
     for tab in &ws.tabs {
         add_main_tab(state, ws.id, tab);
     }

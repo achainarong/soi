@@ -152,6 +152,8 @@ pub(super) fn theme_css(theme: &TerminalTheme, opacity: f64, scale: f64) -> Stri
 .pane-tabs.single .pane-tab {{ background: none; box-shadow: none; }}
 row.drop-before {{ box-shadow: inset 0 2px 0 0 {accent}; }}
 row.drop-after {{ box-shadow: inset 0 -2px 0 0 {accent}; }}
+.pane-tab.drop-before {{ box-shadow: inset 2px 0 0 0 {accent}; }}
+.pane-tabs.drop-end {{ box-shadow: inset -2px 0 0 0 {accent}; }}
 row.drop-into {{ background-color: {drop}; }}
 
 window.soi-settings, popover > contents, popover > arrow {{ background-color: {solid}; color: {fg}; }}

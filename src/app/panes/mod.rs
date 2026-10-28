@@ -27,7 +27,7 @@ pub(super) fn new_pane(state: &App, tabs: &[PathBuf], ids: &[Uuid], active: usiz
         &hint("Zoom pane", "zoom-pane"),
     );
     zoom.add_css_class("zoom-button");
-    let close = header_button(&["window-close-symbolic"], "Close pane and its tabs");
+    let close = header_button(&["window-close-symbolic"], "Close pane");
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 2);
     header.add_css_class("pane-header");
     header.append(&strip);
@@ -39,10 +39,17 @@ pub(super) fn new_pane(state: &App, tabs: &[PathBuf], ids: &[Uuid], active: usiz
     header.append(&close);
 
     let stack = gtk::Stack::builder().hexpand(true).vexpand(true).build();
+    let drop_hint = gtk::Box::builder()
+        .css_classes(["drop-hint"])
+        .can_target(false)
+        .visible(false)
+        .build();
+    let overlay = gtk::Overlay::builder().child(&stack).build();
+    overlay.add_overlay(&drop_hint);
     let pane = gtk::Box::new(gtk::Orientation::Vertical, 0);
     pane.add_css_class("pane");
     pane.append(&header);
-    pane.append(&stack);
+    pane.append(&overlay);
     state.panes.borrow_mut().insert(
         pane.clone(),
         Rc::new(Pane {
@@ -50,8 +57,10 @@ pub(super) fn new_pane(state: &App, tabs: &[PathBuf], ids: &[Uuid], active: usiz
             active: Cell::new(0),
             stack,
             strip,
+            drop_hint,
         }),
     );
+    layout_drag::install_pane_drag(state, &pane, &header);
 
     let on_click = |button: &gtk::Button, f: fn(&App, &gtk::Box)| {
         let (shared, pane_ref) = (Rc::downgrade(&state.shared), pane.downgrade());
@@ -285,7 +294,7 @@ pub(super) enum Slot {
 
 impl Slot {
     /// Detaches `widget` from its parent and returns the slot it occupied.
-    fn take(widget: &gtk::Widget) -> Option<Slot> {
+    pub(super) fn take(widget: &gtk::Widget) -> Option<Slot> {
         let parent = widget.parent()?;
         if let Some(paned) = parent.downcast_ref::<gtk::Paned>() {
             if paned.start_child().as_ref() == Some(widget) {
@@ -302,7 +311,7 @@ impl Slot {
         }
     }
 
-    fn fill(self, widget: &impl IsA<gtk::Widget>) {
+    pub(super) fn fill(self, widget: &impl IsA<gtk::Widget>) {
         match self {
             Slot::Start(paned) => paned.set_start_child(Some(widget)),
             Slot::End(paned) => paned.set_end_child(Some(widget)),

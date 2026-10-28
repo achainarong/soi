@@ -146,6 +146,7 @@ pub(super) fn workspace_row(
 
     attach_drag(&row, Item::Workspace(id));
     attach_inline_rename(&row, state, Item::Workspace(id));
+    layout_drag::install_workspace_drop(state, &row, id);
     row
 }
 

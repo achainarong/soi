@@ -25,6 +25,9 @@ checks![
     windows_maximize_and_zoom_is_kept,
     main_tabs_keep_independent_splits_and_focus,
     pane_cycling_wraps_within_the_selected_main_tab,
+    main_tab_drag_reorders_and_combines_live_layouts,
+    pane_drag_moves_between_tabs_and_windows_without_restarting,
+    layout_drop_waits_for_drag_end_and_cancellation_does_nothing,
     quick_switcher_goes_to_the_workspace_typed,
     terminal_output_comes_back_after_a_restart,
     context_tracks_shell_directory_changes,
@@ -785,6 +788,262 @@ fn main_tabs_keep_independent_splits_and_focus() {
         assert!(matches!(saved.tabs[1].layout, Layout::Pane { .. }));
         window.window.close();
     });
+}
+
+fn main_tab_drag_reorders_and_combines_live_layouts() {
+    isolated("main_tab_drag_reorders_and_combines_live_layouts", || {
+        use layout_drag::{DragItem, DropPlace, Edge, move_layout};
+        let (_app, shared) = application();
+        let window = new_window(&shared, None, true);
+        let ws = active_workspace(&window).unwrap();
+        let workspace = window.active.get().unwrap();
+        let first = current_pane(&window).unwrap();
+        split_pane(&window, &first, gtk::Orientation::Horizontal);
+        let first_tab = ws.current_tab().id;
+        let original = ws.current_tab().layout.first_child().unwrap();
+        let moved_terminal = window.panes.borrow()[&first].current().unwrap();
+        new_main_tab(&window, None);
+        let second = current_pane(&window).unwrap();
+        split_pane(&window, &second, gtk::Orientation::Vertical);
+        let second_tab = ws.current_tab().id;
+        move_layout(
+            &shared,
+            DragItem::MainTab(first_tab),
+            &window,
+            DropPlace::Tabs {
+                workspace,
+                before: None,
+            },
+        );
+        assert_eq!(
+            ws.tabs
+                .borrow()
+                .iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>(),
+            [second_tab, first_tab]
+        );
+        assert_eq!(
+            ws.current_tab().layout.first_child(),
+            Some(original.clone())
+        );
+        move_layout(
+            &shared,
+            DragItem::MainTab(first_tab),
+            &window,
+            DropPlace::Pane {
+                pane: second.downgrade(),
+                edge: Edge::Right,
+            },
+        );
+        assert_eq!(ws.tabs.borrow().len(), 1);
+        assert_eq!(ws.current_tab().id, second_tab);
+        assert_eq!(tab_panes(&ws.current_tab()).len(), 4);
+        assert!(first.is_ancestor(&ws.current_tab().layout));
+        assert!(Rc::ptr_eq(
+            &window.panes.borrow()[&first].current().unwrap(),
+            &moved_terminal
+        ));
+        assert_eq!(
+            original
+                .parent()
+                .unwrap()
+                .downcast::<gtk::Paned>()
+                .unwrap()
+                .orientation(),
+            gtk::Orientation::Horizontal
+        );
+        // A whole layout cannot be dropped into one of its own descendants.
+        let before = snapshot(&window);
+        move_layout(
+            &shared,
+            DragItem::MainTab(second_tab),
+            &window,
+            DropPlace::Pane {
+                pane: first.downgrade(),
+                edge: Edge::Left,
+            },
+        );
+        assert_eq!(snapshot(&window), before);
+        let saved = workspace_snapshot(&window, workspace).unwrap();
+        assert_eq!(saved.tabs.len(), 1);
+        assert!(matches!(saved.tabs[0].layout, Layout::Split { .. }));
+        window.window.close();
+    });
+}
+
+fn pane_drag_moves_between_tabs_and_windows_without_restarting() {
+    isolated(
+        "pane_drag_moves_between_tabs_and_windows_without_restarting",
+        || {
+            use layout_drag::{DragItem, DropPlace, Edge, move_layout};
+            let (_app, shared) = application();
+            let from = new_window(&shared, None, true);
+            let first = current_pane(&from).unwrap();
+            split_pane(&from, &first, gtk::Orientation::Horizontal);
+            let remaining = current_pane(&from).unwrap();
+            let terminal = from.panes.borrow()[&first].current().unwrap();
+            terminal.terminal.restore("drag-keeps-this-output\r\n");
+            let ws = active_workspace(&from).unwrap();
+            let original_tab = ws.current_tab().id;
+            new_main_tab(&from, None);
+            let target = current_pane(&from).unwrap();
+            move_layout(
+                &shared,
+                DragItem::Pane(terminal.id),
+                &from,
+                DropPlace::Pane {
+                    pane: target.downgrade(),
+                    edge: Edge::Left,
+                },
+            );
+            assert_eq!(tab_panes(&ws.tabs.borrow()[0]), [remaining]);
+            assert_eq!(tab_panes(&ws.current_tab()).len(), 2);
+            let workspace = from.active.get().unwrap();
+            move_layout(
+                &shared,
+                DragItem::Pane(terminal.id),
+                &from,
+                DropPlace::Tabs {
+                    workspace,
+                    before: Some(original_tab),
+                },
+            );
+            assert_eq!(ws.tabs.borrow().len(), 3);
+            assert_eq!(ws.active_tab.get(), 0);
+            assert_eq!(
+                tab_panes(&ws.current_tab()).as_slice(),
+                std::slice::from_ref(&first)
+            );
+            let moved_tab = ws.current_tab().id;
+            new_terminal_workspace(&from, None);
+            let other_workspace = from.active.get().unwrap();
+            move_layout(
+                &shared,
+                DragItem::MainTab(moved_tab),
+                &from,
+                DropPlace::Tabs {
+                    workspace: other_workspace,
+                    before: None,
+                },
+            );
+            assert_eq!(ws.tabs.borrow().len(), 2);
+            assert_eq!(active_workspace(&from).unwrap().current_tab().id, moved_tab);
+            assert_eq!(current_pane(&from), Some(first.clone()));
+            let to = new_window(&shared, None, true);
+            let destination = to.active.get().unwrap();
+            let before = active_workspace(&to).unwrap().current_tab().id;
+            move_layout(
+                &shared,
+                DragItem::MainTab(moved_tab),
+                &to,
+                DropPlace::Tabs {
+                    workspace: destination,
+                    before: Some(before),
+                },
+            );
+            assert!(!from.panes.borrow().contains_key(&first));
+            assert!(Rc::ptr_eq(
+                &to.panes.borrow()[&first].current().unwrap(),
+                &terminal
+            ));
+            assert_eq!(current_pane(&to), Some(first.clone()));
+            assert!(
+                terminal
+                    .terminal
+                    .export(20)
+                    .contains("drag-keeps-this-output")
+            );
+            // Main-tab buttons must act on their new workspace/window after moving.
+            run_action(&to, "next-tab");
+            let button = active_workspace(&to).unwrap().tabs.borrow()[0]
+                .button
+                .clone();
+            let gestures = button.observe_controllers();
+            let click = (0..gestures.n_items())
+                .filter_map(|i| gestures.item(i))
+                .find_map(|controller| controller.downcast::<gtk::GestureClick>().ok())
+                .unwrap();
+            click.emit_by_name::<()>("released", &[&1i32, &0.0f64, &0.0f64]);
+            assert_eq!(current_pane(&to), Some(first.clone()));
+            // A pane dragged out of a workspace's only tab leaves a usable fresh shell.
+            let third = new_window(&shared, None, true);
+            let sole = current_pane(&third).unwrap();
+            let sole_terminal = third.panes.borrow()[&sole].current().unwrap();
+            move_layout(
+                &shared,
+                DragItem::Pane(sole_terminal.id),
+                &to,
+                DropPlace::Pane {
+                    pane: first.downgrade(),
+                    edge: Edge::Bottom,
+                },
+            );
+            assert!(!third.panes.borrow().contains_key(&sole));
+            assert!(current_pane(&third).is_some());
+            assert!(to.panes.borrow().contains_key(&sole));
+            assert_eq!(active_workspace(&third).unwrap().tabs.borrow().len(), 1);
+            third.window.close();
+            to.window.close();
+            from.window.close();
+        },
+    );
+}
+
+fn layout_drop_waits_for_drag_end_and_cancellation_does_nothing() {
+    isolated(
+        "layout_drop_waits_for_drag_end_and_cancellation_does_nothing",
+        || {
+            use layout_drag::{DragItem, DropPlace, LayoutDrag, finish_layout_drop};
+            let (_app, shared) = application();
+            let window = new_window(&shared, None, true);
+            let workspace = window.active.get().unwrap();
+            let ws = active_workspace(&window).unwrap();
+            let first = ws.current_tab().id;
+            new_main_tab(&window, None);
+            let second = ws.current_tab().id;
+            shared.layout_drag.borrow_mut().pending = Some((
+                DragItem::MainTab(first),
+                window.id.get(),
+                DropPlace::Tabs {
+                    workspace,
+                    before: None,
+                },
+            ));
+            finish_layout_drop(&shared);
+            assert_eq!(ws.tabs.borrow()[0].id, first, "not before drag-end");
+            shared.layout_drag.borrow_mut().ended = true;
+            finish_layout_drop(&shared);
+            wait_until(|| ws.tabs.borrow()[0].id == second);
+            assert_eq!(ws.tabs.borrow().len(), 2);
+            assert!(shared.layout_drag.borrow().pending.is_none());
+            // Cancelling a subsequent drag leaves both layouts alone.
+            shared.layout_drag.replace(LayoutDrag::default());
+            shared.layout_drag.borrow_mut().ended = true;
+            finish_layout_drop(&shared);
+            assert_eq!(
+                ws.tabs
+                    .borrow()
+                    .iter()
+                    .map(|tab| tab.id)
+                    .collect::<Vec<_>>(),
+                [second, first]
+            );
+            // Sources and targets are actually installed, not just movement helpers.
+            let button = ws.current_tab().button.clone();
+            assert!(
+                (0..button.observe_controllers().n_items())
+                    .filter_map(|i| button.observe_controllers().item(i))
+                    .any(|controller| controller.is::<gtk::DragSource>())
+            );
+            assert!(
+                (0..ws.tab_strip.observe_controllers().n_items())
+                    .filter_map(|i| ws.tab_strip.observe_controllers().item(i))
+                    .any(|controller| controller.is::<gtk::DropTarget>())
+            );
+            window.window.close();
+        },
+    );
 }
 
 fn pane_cycling_wraps_within_the_selected_main_tab() {
