@@ -50,6 +50,8 @@ pub struct Decoder {
     /// A command being read (`#`, `!` or `"`) and its numbers so far.
     command: Option<u8>,
     numbers: Vec<u32>,
+    /// Ignore surplus parameters, including their digits, without storing them.
+    extra_parameters: bool,
 }
 
 impl Default for Decoder {
@@ -77,6 +79,7 @@ impl Decoder {
             declared: None,
             command: None,
             numbers: Vec::new(),
+            extra_parameters: false,
         }
     }
 
@@ -84,6 +87,9 @@ impl Decoder {
         if let Some(command) = self.command {
             match byte {
                 b'0'..=b'9' => {
+                    if self.extra_parameters {
+                        return;
+                    }
                     if self.numbers.is_empty() {
                         self.numbers.push(0);
                     }
@@ -95,11 +101,16 @@ impl Decoder {
                     if self.numbers.is_empty() {
                         self.numbers.push(0);
                     }
-                    self.numbers.push(0);
+                    if self.numbers.len() < 5 {
+                        self.numbers.push(0);
+                    } else {
+                        self.extra_parameters = true;
+                    }
                     return;
                 }
                 _ => {
                     self.command = None;
+                    self.extra_parameters = false;
                     let numbers = std::mem::take(&mut self.numbers);
                     if command == b'!' {
                         // A repeat applies to the sixel right after it.
@@ -120,7 +131,7 @@ impl Decoder {
             b'$' => self.x = 0,
             b'-' => {
                 self.x = 0;
-                self.y += 6;
+                self.y = (self.y + 6).min(MAX_HEIGHT);
             }
             _ => {}
         }
@@ -230,7 +241,7 @@ fn hls(hue: u32, lightness: u32, saturation: u32) -> (u8, u8, u8) {
     let l = lightness.min(100) as f64 / 100.0;
     let s = saturation.min(100) as f64 / 100.0;
     // Sixel puts blue at 0°, the usual HSL wheel puts red there.
-    let h = ((hue + 240) % 360) as f64 / 360.0;
+    let h = ((hue % 360 + 240) % 360) as f64 / 360.0;
     if s == 0.0 {
         let v = (l * 255.0).round() as u8;
         return (v, v, v);
@@ -315,6 +326,31 @@ mod tests {
         assert_eq!(image.0 as usize, MAX_WIDTH);
         assert!(decode("").is_none());
         assert!(decode("#5;1;0;50;100").is_none(), "only colors");
+    }
+
+    #[test]
+    fn command_parameters_and_band_positions_stay_bounded() {
+        let mut decoder = Decoder::default();
+        decoder.put(b'#');
+        for _ in 0..100_000 {
+            decoder.put(b';');
+        }
+        assert!(decoder.numbers.len() <= 5, "only five parameters are used");
+        decoder.put(b'~');
+        for _ in 0..100_000 {
+            decoder.put(b'-');
+        }
+        assert!(decoder.y <= MAX_HEIGHT);
+        let image = decode("#1;2;100;0;0;999999#1~").unwrap();
+        assert_eq!(pixel(&image, 0, 0), [255, 0, 0, 255]);
+        assert_eq!(hls(u32::MAX, 50, 100), hls(u32::MAX % 360, 50, 100));
+    }
+
+    #[test]
+    fn huge_hls_hues_wrap_without_overflow() {
+        let image = decode("#1;1;4294967295;50;100~").unwrap();
+        let (r, g, b) = hls(u32::MAX % 360, 50, 100);
+        assert_eq!(pixel(&image, 0, 0), [r, g, b, 255]);
     }
 
     #[test]

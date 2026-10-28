@@ -118,6 +118,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hostile_sixel_recovers_across_output_chunks() {
+        let mut term = Term::new(20, 3, 10);
+        let mut feeder = Feeder::default();
+        let mut input = b"\x1bPq#1;1;4294967295;50;100".to_vec();
+        input.extend(std::iter::repeat_n(b';', 100_000));
+        input.extend_from_slice(b"~\x1b\\\x1b[Hok");
+        for chunk in input.chunks(7) {
+            feeder.feed(&mut term, chunk);
+        }
+        assert_eq!(term.graphics.placements.len(), 1);
+        assert_eq!(term.line(0).unwrap().text(0, 20), "ok");
+    }
+
+    #[test]
     fn regression_apc_escape_bytes_obey_limit() {
         let mut term = Term::new(20, 3, 10);
         let mut feeder = Feeder {

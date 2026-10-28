@@ -11,6 +11,10 @@ jobs:
     strategy:
       matrix:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
+        toolchain: [stable]
+        include:
+          - runner: ubuntu-24.04
+            toolchain: '1.92.0'
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
@@ -20,17 +24,20 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: ${{ matrix.toolchain }}
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Formatting
+        if: matrix.toolchain == 'stable'
         run: cargo fmt --check
 
       - name: Lints
+        if: matrix.toolchain == 'stable'
         run: cargo clippy --all-targets -- -D warnings
 
       # Tests that need a display or local programs (fastfetch) are marked
       # #[ignore] and don't run here.
       - name: Tests
-        run: cargo test
+        run: cargo test --locked
