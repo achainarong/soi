@@ -529,9 +529,43 @@ fn hostname() -> String {
     }
 }
 
-/// Line ends as a terminal's Enter key sends them.
+/// Line ends as Enter sends them, with line-editor commands stripped.
+/// In particular, never let clipboard ESC terminate bracketed paste (even
+/// nested end markers), or control keys execute/edit input behind the preview.
 fn normalize_paste(text: &str) -> String {
-    text.replace("\r\n", "\r").replace('\n', "\r")
+    text.chars()
+        .filter(|&c| !c.is_control() || matches!(c, '\t' | '\r' | '\n'))
+        .collect::<String>()
+        .replace("\r\n", "\r")
+        .replace('\n', "\r")
+}
+
+#[cfg(test)]
+mod paste_security_tests {
+    use super::normalize_paste;
+
+    #[test]
+    fn clipboard_cannot_inject_terminal_or_line_editor_controls() {
+        for text in [
+            "\x1b[201~echo injected\n",
+            "\x1b[20\x1b[201~1~echo injected\n",
+            "\u{009b}201~echo injected\n",
+            "safe\x08\x7f\x15\x04\x00hidden",
+        ] {
+            let normalized = normalize_paste(text);
+            assert!(!normalized.chars().any(|c| c.is_control() && c != '\r'));
+            assert!(!normalized.contains("\x1b[201~"));
+            assert_eq!(normalize_paste(&normalized), normalized);
+        }
+    }
+
+    #[test]
+    fn clipboard_preserves_text_tabs_and_normalizes_line_endings() {
+        assert_eq!(
+            normalize_paste("ไทย\ttext\r\nnext\nlast\r"),
+            "ไทย\ttext\rnext\rlast\r"
+        );
+    }
 }
 
 fn rgb(color: &gdk::RGBA) -> Rgb {
@@ -952,7 +986,6 @@ impl Inner {
         // It replaces a selection made with the keyboard, as in a text field.
         self.delete_marked();
         if self.term.borrow().modes.bracketed_paste {
-            let text = text.replace("\x1b[201~", "");
             self.send_input(format!("\x1b[200~{text}\x1b[201~").as_bytes());
         } else {
             self.send_input(text.as_bytes());

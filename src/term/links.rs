@@ -83,8 +83,27 @@ fn check_file(rest: &str) -> Result<(), &'static str> {
     if !local {
         return Err("file links to other machines are not opened");
     }
-    let path = PathBuf::from(percent_decode(path).ok_or(MALFORMED)?);
+    // Queries/fragments are interpreted by the URI launcher, not by the
+    // filesystem. Never validate a different path from the one it opens.
+    if path.contains(['?', '#']) {
+        return Err(MALFORMED);
+    }
+    let decoded = percent_decode(path).ok_or(MALFORMED)?;
+    if decoded.chars().any(char::is_control) {
+        return Err(MALFORMED);
+    }
+    let requested = PathBuf::from(decoded);
+    let path = std::fs::canonicalize(&requested).map_err(|_| "the file does not exist")?;
     let meta = std::fs::metadata(&path).map_err(|_| "the file does not exist")?;
+    // Inspect both names: launchers may use the requested name's extension,
+    // while symlinks can hide the target's. macOS app bundles execute too,
+    // even though they are directories rather than executable regular files.
+    if [&requested, &path].iter().any(|path| {
+        path.extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("desktop") || e.eq_ignore_ascii_case("app"))
+    }) {
+        return Err("launcher files are not opened");
+    }
     if meta.is_dir() {
         return Ok(());
     }
@@ -93,9 +112,6 @@ fn check_file(rest: &str) -> Result<(), &'static str> {
     }
     if meta.permissions().mode() & 0o111 != 0 {
         return Err("executable files are not opened");
-    }
-    if path.extension().is_some_and(|e| e == "desktop") {
-        return Err("launcher files are not opened");
     }
     Ok(())
 }
@@ -158,6 +174,37 @@ mod tests {
         assert!(check("file:///etc").is_ok(), "folders are fine");
         assert!(check("file:///usr/bin/ls").is_err(), "executables are not");
         assert!(check("file:///nonexistent%20file").is_err());
+    }
+
+    #[test]
+    fn rejects_disguised_launchers_and_ambiguous_file_uris() {
+        let dir = std::env::temp_dir().join(format!("soi-links-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let launcher = dir.join("evil.desktop");
+        std::fs::write(&launcher, "[Desktop Entry]\nType=Application\nExec=sh\n").unwrap();
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::os::unix::fs::symlink(&launcher, dir.join("readme.txt")).unwrap();
+        std::fs::create_dir(dir.join("Evil.APP")).unwrap();
+        std::fs::write(dir.join("safe.txt"), "text").unwrap();
+        std::os::unix::fs::symlink(dir.join("safe.txt"), dir.join("alias.desktop")).unwrap();
+        std::fs::write(dir.join("safe.txt#fragment"), "text").unwrap();
+        std::fs::write(dir.join("safe.txt?query"), "text").unwrap();
+        for name in [
+            "evil.desktop",
+            "readme.txt",
+            "alias.desktop",
+            "Evil.APP",
+            "safe.txt#fragment",
+            "safe.txt?query",
+        ] {
+            assert!(
+                check(&format!("file://{}/{name}", dir.display())).is_err(),
+                "{name}"
+            );
+        }
+        assert!(check(&format!("file://{}/safe.txt", dir.display())).is_ok());
+        assert!(check(&format!("file://{}/safe.txt%23fragment", dir.display())).is_ok());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

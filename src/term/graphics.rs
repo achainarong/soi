@@ -183,13 +183,18 @@ impl Graphics {
         };
         let control = parse_control(control_text);
 
+        // Check before copying/decoding, including unchunked transmissions.
+        if payload.len() > MAX_PAYLOAD_BYTES {
+            self.pending = None;
+            return Outcome::default();
+        }
         // Continuation chunks only carry `m` (and maybe `q`).
         if let Some((first, mut buffer)) = self.pending.take() {
-            buffer.extend_from_slice(payload);
-            if buffer.len() > MAX_PAYLOAD_BYTES {
-                // Too big: drop the whole transmission.
+            if payload.len() > MAX_PAYLOAD_BYTES - buffer.len() {
+                // Too big: drop the whole transmission before allocating.
                 return Outcome::default();
             }
+            buffer.extend_from_slice(payload);
             if control.more {
                 self.pending = Some((first, buffer));
                 return Outcome::default();
@@ -448,6 +453,7 @@ impl Graphics {
                 if w == 0 || h == 0 || w > MAX_DIMENSION || h > MAX_DIMENSION {
                     return Err("EINVAL:bad image size".into());
                 }
+                rgba_size(w, h)?;
                 let needed = w as usize * h as usize * channels;
                 if data.len() < needed {
                     return Err("ENODATA:not enough pixel data".into());
@@ -569,6 +575,16 @@ fn open_image_file(path: &Path) -> std::io::Result<std::fs::File> {
     Ok(file)
 }
 
+/// Validate the final RGBA allocation, not only the smaller RGB/grayscale
+/// source buffer. Call before allocating or converting attacker-sized pixels.
+fn rgba_size(width: u32, height: u32) -> Result<usize, String> {
+    (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .filter(|&size| size <= MAX_IMAGE_BYTES)
+        .ok_or_else(|| "EFBIG:image too large".into())
+}
+
 fn decode_png(data: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(data));
     decoder.set_transformations(png::Transformations::normalize_to_color8());
@@ -579,6 +595,7 @@ fn decode_png(data: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     if info.width > MAX_DIMENSION || info.height > MAX_DIMENSION {
         return Err("EFBIG:PNG too large".into());
     }
+    rgba_size(info.width, info.height)?;
     let size = reader
         .output_buffer_size()
         .ok_or_else(|| "EFBIG:PNG too large".to_string())?;
@@ -638,6 +655,33 @@ mod tests {
 
     fn b64(data: &[u8]) -> String {
         base64::engine::general_purpose::STANDARD.encode(data)
+    }
+
+    #[test]
+    fn rejects_oversized_raw_images_before_pixel_conversion() {
+        for format in [24, 32] {
+            let command = format!("a=q,f={format},s=10000,v=10000,i=1;AAAA");
+            let outcome = Graphics::default().command(command.as_bytes(), CONTEXT);
+            assert!(outcome.reply.unwrap().contains("EFBIG"));
+        }
+        assert_eq!(rgba_size(5120, 5120).unwrap(), MAX_IMAGE_BYTES);
+        assert!(rgba_size(5121, 5120).is_err());
+        assert!(rgba_size(u32::MAX, u32::MAX).is_err());
+    }
+
+    #[test]
+    fn rejects_oversized_grayscale_png_before_decoding_pixels() {
+        // Only a header is needed: final RGBA size must be rejected before
+        // attempting to read the (absent) compressed pixels.
+        let mut data = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut data, 10000, 10000);
+            encoder.set_color(png::ColorType::Grayscale);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_chunk(png::chunk::IDAT, &[]).unwrap();
+        }
+        let error = decode_png(&data).unwrap_err();
+        assert!(error.contains("EFBIG"), "{error}");
     }
 
     #[test]
