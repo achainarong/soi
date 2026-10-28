@@ -31,6 +31,7 @@ checks![
     quick_switcher_goes_to_the_workspace_typed,
     terminal_output_comes_back_after_a_restart,
     agents_resume_in_their_tabs_after_a_restart,
+    agents_that_never_say_their_session_continue_the_latest,
     context_tracks_shell_directory_changes,
     agents_report_states_and_alert_until_seen,
     zoomed_panes_fill_the_workspace_until_the_layout_changes,
@@ -1235,6 +1236,44 @@ fn agents_resume_in_their_tabs_after_a_restart() {
         wait_until(|| tab.resume.borrow().is_none());
         window.window.close();
     });
+}
+
+fn agents_that_never_say_their_session_continue_the_latest() {
+    isolated(
+        "agents_that_never_say_their_session_continue_the_latest",
+        || {
+            use std::os::unix::fs::PermissionsExt;
+            let bin = home_dir().join("bin");
+            fs::create_dir(&bin).unwrap();
+            let claude = bin.join("claude");
+            fs::write(&claude, "#!/bin/sh\necho \"agent $*\"\nsleep 60\n").unwrap();
+            fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).unwrap();
+            let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+            // SAFETY: before any thread of this test process reads the environment.
+            unsafe { std::env::set_var("PATH", path) };
+            let (app, shared) = application();
+            let window = new_window(&shared, None, true);
+            let pane = current_pane(&window).unwrap();
+            let tab = window.panes.borrow()[&pane].current().unwrap();
+            tab.terminal.type_ahead("claude\r");
+            wait_until(|| tab.agent.borrow().program.as_deref() == Some("claude"));
+            assert_eq!(
+                *tab.resume.borrow(),
+                crate::agents::SessionMetadata::latest("claude")
+            );
+            window.close_confirmed.set(true);
+            window.window.close();
+
+            let restored = init_shared(&app);
+            restore_windows(&restored);
+            let window = &restored.windows()[0];
+            let pane = current_pane(window).unwrap();
+            let tab = window.panes.borrow()[&pane].current().unwrap();
+            wait_until(|| tab.terminal.export(10).contains("agent --continue"));
+            window.close_confirmed.set(true);
+            window.window.close();
+        },
+    );
 }
 
 fn context_tracks_shell_directory_changes() {

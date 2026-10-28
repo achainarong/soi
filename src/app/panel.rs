@@ -473,6 +473,13 @@ fn observe(tab: &Tab, names: &[String], now: Instant) -> bool {
     if running && (!agent.is_agent() || agent.state == AgentState::Exited) {
         // It quit: the tab comes back as a shell.
         tab.resume.take();
+    } else if agent.state != AgentState::Exited
+        && let Some(program) = &agent.program
+        && tab.resume.borrow().is_none()
+    {
+        // Until it says which session it is (or if it never does), its
+        // latest one in the folder.
+        tab.resume.replace(SessionMetadata::latest(program));
     }
     changed
 }
@@ -568,7 +575,7 @@ pub(super) fn listen(shared: &Rc<Shared>) {
                         .get(&report.tab)
                         .and_then(Weak::upgrade)
                 {
-                    if metadata.resume_command().is_ok() {
+                    if !metadata.id.is_empty() && metadata.resume_command().is_ok() {
                         tab.resume.replace(Some(metadata.clone()));
                     }
                     tasks::record_report(&shared, &tab, metadata);
@@ -1370,8 +1377,8 @@ pub(super) fn settings_page(state: &App) -> gtk::Widget {
                 tilde(&agents::claude_settings_path())
             ),
             preview: format!(
-                "For UserPromptSubmit, PreToolUse, PostToolUse, Notification and Stop, a hook \
-                 running:\n\n{}",
+                "For SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Notification and \
+                 Stop, a hook running:\n\n{}",
                 agents::CLAUDE_COMMAND
             ),
             installed: agents::claude_hooks_installed,

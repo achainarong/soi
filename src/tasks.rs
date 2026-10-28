@@ -596,6 +596,8 @@ impl AgentSession {
 
     /// Unknown providers remain useful bookmarks, but can't be resumed.
     pub fn resume_command(&self) -> Result<Vec<String>, String> {
+        // A bookmark is one session, never just the latest.
+        validate_id(&self.session_id)?;
         crate::agents::SessionMetadata {
             provider: self.provider.clone(),
             id: self.session_id.clone(),

@@ -39,10 +39,12 @@ your workspaces and panes branch off the sidebar.
   tab's folder are saved continuously. Open windows return on start; closed
   windows stay available in the switcher. Each tab's **output comes back**
   too (its last 2000 lines, with colors), above a fresh shell in its folder.
-  **Agents come back too**: a tab that ran Claude Code, OpenCode or Pi
-  resumes that agent's session in its shell (they need soi's integration,
-  `soi install-agents`, to say which session it is). Other
-  programs that were running are not restarted.
+  **Agents come back too**: a tab that ran an agent resumes it in its
+  shell. Claude Code, OpenCode and Pi say which session they're in (with
+  soi's integration, `soi install-agents`) and get exactly that one back;
+  Codex, or one of them without the integration, continues its latest
+  session in the tab's folder. Other programs that were running are not
+  restarted.
 - **Own terminal engine** with true color, scrollback, re-wrapping on resize,
   colored curly, dotted, dashed and double underlines (e.g. Neovim's
   diagnostics),

@@ -301,23 +301,41 @@ pub struct Report {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionMetadata {
     pub provider: String,
+    /// Empty when the agent didn't say: its latest session in the folder.
     pub id: String,
 }
 
 impl SessionMetadata {
+    /// The latest session of `program`'s agent, when it can continue it.
+    pub fn latest(program: &str) -> Option<Self> {
+        let latest = Self {
+            provider: program.into(),
+            id: String::new(),
+        };
+        latest.resume_command().is_ok().then_some(latest)
+    }
+
     /// The command that resumes the session. Arguments are passed directly to
     /// the PTY or typed into a shell; IDs are checked, so neither can run
     /// arbitrary commands. Unknown providers can't be resumed.
     pub fn resume_command(&self) -> Result<Vec<String>, String> {
-        crate::tasks::validate_id(&self.id)?;
-        let (program, flag) = match self.provider.as_str() {
-            "claude" => ("claude", "--resume"),
-            "codex" => ("codex", "resume"),
-            "opencode" => ("opencode", "--session"),
-            "pi" => ("pi", "--session"),
+        let words: &[&str] = match (self.provider.as_str(), self.id.is_empty()) {
+            ("claude", false) => &["claude", "--resume"],
+            ("codex", false) => &["codex", "resume"],
+            ("opencode", false) => &["opencode", "--session"],
+            ("pi", false) => &["pi", "--session"],
+            ("claude", true) => &["claude", "--continue"],
+            ("codex", true) => &["codex", "resume", "--last"],
+            ("opencode", true) => &["opencode", "--continue"],
+            ("pi", true) => &["pi", "--continue"],
             _ => return Err("This provider has no supported resume command.".into()),
         };
-        Ok(vec![program.into(), flag.into(), self.id.clone()])
+        let mut command: Vec<String> = words.iter().map(|word| word.to_string()).collect();
+        if !self.id.is_empty() {
+            crate::tasks::validate_id(&self.id)?;
+            command.push(self.id.clone());
+        }
+        Ok(command)
     }
 }
 
@@ -451,6 +469,8 @@ pub fn claude_event(event: &Value) -> Option<(State, String)> {
             (!reminder).then(|| (State::Input, message.to_string()))
         }
         "Stop" => Some((State::Done, String::new())),
+        // Says which session it is right away, to resume it after a restart.
+        "SessionStart" => Some((State::Idle, String::new())),
         _ => None,
     }
 }
@@ -463,6 +483,7 @@ pub const CLAUDE_COMMAND: &str =
     "[ -z \"$SOI_BIN\" ] || \"$SOI_BIN\" claude-hook # soi-agent-integration";
 
 const CLAUDE_EVENTS: &[&str] = &[
+    "SessionStart",
     "UserPromptSubmit",
     "PreToolUse",
     "PostToolUse",
@@ -1324,7 +1345,32 @@ mod tests {
             event(r#"{"hook_event_name":"Stop"}"#),
             Some((State::Done, String::new()))
         );
-        assert_eq!(event(r#"{"hook_event_name":"SessionStart"}"#), None);
+        assert_eq!(
+            event(r#"{"hook_event_name":"SessionStart"}"#),
+            Some((State::Idle, String::new()))
+        );
+    }
+
+    #[test]
+    fn sessions_resume_by_id_or_continue_the_latest() {
+        let session = |provider: &str, id: &str| SessionMetadata {
+            provider: provider.into(),
+            id: id.into(),
+        };
+        assert_eq!(
+            session("claude", "abc-123").resume_command().unwrap(),
+            ["claude", "--resume", "abc-123"]
+        );
+        assert_eq!(
+            SessionMetadata::latest("codex")
+                .unwrap()
+                .resume_command()
+                .unwrap(),
+            ["codex", "resume", "--last"]
+        );
+        assert!(session("claude", "a; rm -rf ~").resume_command().is_err());
+        assert!(session("claude", "--help").resume_command().is_err());
+        assert!(SessionMetadata::latest("aider").is_none());
     }
 
     #[test]
