@@ -66,15 +66,107 @@ pub(in crate::app) fn settings_form(state: &App) -> gtk::Widget {
         .map_or(0, |i| i + 1);
     scheme.set_selected(selected as u32);
     let ids: Vec<String> = schemes.into_iter().map(|c| c.id).collect();
+    // By label, as the search filters the list and so changes positions.
+    let by_label: Rc<std::collections::HashMap<String, Option<String>>> = Rc::new(
+        labels
+            .iter()
+            .cloned()
+            .zip(std::iter::once(None).chain(ids.iter().cloned().map(Some)))
+            .collect(),
+    );
+    let chosen = move |dropdown: &gtk::DropDown| {
+        (dropdown.selected() as usize)
+            .checked_sub(1)
+            .and_then(|i| ids.get(i).cloned())
+    };
     let weak = Rc::downgrade(state);
+    let shown = Rc::new(RefCell::new(current.theme.clone()));
+    // Shows a scheme without saving it; `chosen` is what's saved.
+    let show: Rc<dyn Fn(Option<String>)> = {
+        let shown = shown.clone();
+        Rc::new(move |id| {
+            if let Some(state) = weak.upgrade()
+                && *shown.borrow() != id
+            {
+                shown.replace(id.clone());
+                state.shared.settings.borrow_mut().theme = id;
+                apply_settings(&state.shared);
+            }
+        })
+    };
+    let weak = Rc::downgrade(state);
+    let chosen = Rc::new(chosen);
+    let choose = chosen.clone();
     scheme.connect_selected_notify(move |dropdown| {
         if let Some(state) = weak.upgrade() {
-            let id = (dropdown.selected() as usize)
-                .checked_sub(1)
-                .and_then(|i| ids.get(i).cloned());
+            let id = choose(dropdown);
+            shown.replace(id.clone());
             update_settings(&state, |s| s.theme = id);
         }
     });
+    // Hovering a scheme in the list previews it, until the pointer leaves
+    // the list or it closes.
+    let restore: Rc<dyn Fn()> = {
+        let (dropdown, show) = (scheme.downgrade(), show.clone());
+        Rc::new(move || {
+            if let Some(dropdown) = dropdown.upgrade() {
+                show(chosen(&dropdown));
+            }
+        })
+    };
+    let hovers = Rc::new(Cell::new(0u64));
+    let factory = gtk::SignalListItemFactory::new();
+    let (setup_hovers, setup_restore) = (hovers.clone(), restore.clone());
+    factory.connect_setup(move |_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        let label = gtk::Label::builder().xalign(0.0).build();
+        let motion = gtk::EventControllerMotion::new();
+        let (by_label, show, hovers) = (by_label.clone(), show.clone(), setup_hovers.clone());
+        let weak_label = label.downgrade();
+        motion.connect_enter(move |_, _, _| {
+            hovers.set(hovers.get() + 1);
+            if let Some(label) = weak_label.upgrade()
+                && let Some(id) = by_label.get(label.label().as_str())
+            {
+                show(id.clone());
+            }
+        });
+        let (hovers, restore) = (setup_hovers.clone(), setup_restore.clone());
+        motion.connect_leave(move |_| {
+            // Moving to the next row enters it before this runs.
+            let left = hovers.get();
+            let (hovers, restore) = (hovers.clone(), restore.clone());
+            glib::idle_add_local_once(move || {
+                if hovers.get() == left {
+                    restore();
+                }
+            });
+        });
+        label.add_controller(motion);
+        item.set_child(Some(&label));
+    });
+    factory.connect_bind(|_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        if let (Some(label), Some(text)) = (
+            item.child().and_downcast::<gtk::Label>(),
+            item.item().and_downcast::<gtk::StringObject>(),
+        ) {
+            label.set_label(&text.string());
+        }
+    });
+    scheme.set_list_factory(Some(&factory));
+    let mut child = scheme.first_child();
+    while let Some(widget) = child {
+        if let Some(popover) = widget.downcast_ref::<gtk::Popover>() {
+            let restore = restore.clone();
+            popover.connect_closed(move |_| restore());
+        }
+        child = widget.next_sibling();
+    }
     add_row(
         "Color scheme",
         scheme.upcast_ref(),
