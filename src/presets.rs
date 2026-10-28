@@ -71,28 +71,29 @@ impl Preset {
     /// Claude Code may read and edit there without asking (see `env` for
     /// OpenCode).
     pub fn command(&self, brief: Option<String>, tasks: Option<&Path>) -> Vec<String> {
-        self.build(brief, tasks, true)
+        self.build(brief, tasks, Compat::default())
     }
 
-    /// `command`, for the tool as installed on `path`: without the options
-    /// its version doesn't take (see `opencode_takes_model`).
+    /// `command`, for the tool as installed on `path` (see `Compat`).
     pub fn launch_command(
         &self,
         brief: Option<String>,
         tasks: Option<&Path>,
         path: &str,
     ) -> Vec<String> {
-        let model = self.program != "opencode" || opencode_takes_model(path);
-        self.build(brief, tasks, model)
+        self.build(brief, tasks, Compat::of(&self.program, path))
     }
 
-    /// With `model` false: no `--model`, and no `--agent` in the arguments
-    /// before a `--` (after one, they're the wrapper's).
-    fn build(&self, brief: Option<String>, tasks: Option<&Path>, model: bool) -> Vec<String> {
+    /// Without `compat.model`: no `--model`, and no `--agent` in the
+    /// arguments before a `--` (after one, they're the wrapper's).
+    fn build(&self, brief: Option<String>, tasks: Option<&Path>, compat: Compat) -> Vec<String> {
         let program = self.program.as_str();
         let mut command: Vec<String> = self.wrapper.split_whitespace().map(String::from).collect();
         command.push(program.to_string());
-        let takes_model = model;
+        if compat.standalone {
+            command.push("--standalone".to_string());
+        }
+        let takes_model = compat.model;
         let model = self.model.trim();
         let variant = self.variant.trim();
         if !model.is_empty() && takes_model {
@@ -178,28 +179,62 @@ impl Preset {
     }
 }
 
-/// Whether OpenCode's terminal app, as installed on `path`, takes
-/// `--model` and `--agent`. 1.x does; 2.x so far doesn't and quits on them
-/// (anomalyco/opencode#56218), so it starts with the model used last.
-/// Asked once per installed binary, so an update counts without a restart;
-/// when it can't tell, the options stay.
-fn opencode_takes_model(path: &str) -> bool {
-    static ASKED: OnceLock<Mutex<HashMap<(PathBuf, SystemTime), bool>>> = OnceLock::new();
-    let Some(program) = crate::agents::find_program("opencode", path) else {
-        return true;
-    };
-    let Some(modified) = fs::metadata(&program).and_then(|m| m.modified()).ok() else {
-        return true;
-    };
+/// How a tool's command line changes with its version, as installed. The
+/// default is what versions soi can't tell apart take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Compat {
+    /// Takes `--model` and `--agent`. OpenCode 2.x so far doesn't and quits
+    /// on them (anomalyco/opencode#56218), so it starts with its default
+    /// model, else the one used last.
+    pub model: bool,
+    /// Needs `--standalone` for a server of its own. OpenCode 2.x otherwise
+    /// uses a background server shared by all its terminals, and its plugins
+    /// and config there don't see the tab's environment: soi's plugin can't
+    /// tell which tab it reports for, and `env`'s task folders don't count.
+    pub standalone: bool,
+}
+
+impl Default for Compat {
+    fn default() -> Self {
+        Self {
+            model: true,
+            standalone: false,
+        }
+    }
+}
+
+impl Compat {
+    /// For `program` as installed on `path`.
+    pub fn of(program: &str, path: &str) -> Self {
+        match (program, major_version_of(program, path)) {
+            ("opencode", Some(major)) if major >= 2 => Self {
+                model: false,
+                standalone: true,
+            },
+            _ => Self::default(),
+        }
+    }
+}
+
+/// The major version of `program` as installed on `path`, from its
+/// `--version`. Asked once per installed binary, so an update counts without
+/// a restart. Only for tools whose versions differ (see `Compat`): others
+/// aren't run for it.
+fn major_version_of(program: &str, path: &str) -> Option<u32> {
+    static ASKED: OnceLock<Mutex<HashMap<(PathBuf, SystemTime), Option<u32>>>> = OnceLock::new();
+    if program != "opencode" {
+        return None;
+    }
+    let binary = crate::agents::find_program(program, path)?;
+    let modified = fs::metadata(&binary).and_then(|m| m.modified()).ok()?;
     let mut asked = ASKED.get_or_init(Mutex::default).lock().unwrap();
-    *asked.entry((program.clone(), modified)).or_insert_with(|| {
-        std::process::Command::new(&program)
+    *asked.entry((binary.clone(), modified)).or_insert_with(|| {
+        std::process::Command::new(&binary)
             .arg("--version")
             .env("PATH", path)
             .output()
             .ok()
             .and_then(|out| major_version(&String::from_utf8_lossy(&out.stdout)))
-            .is_none_or(|major| major < 2)
     })
 }
 
@@ -322,18 +357,23 @@ mod tests {
     }
 
     #[test]
-    fn opencode_2_gets_no_model_or_agent() {
+    fn opencode_2_gets_its_own_server_and_no_model_or_agent() {
         let preset = Preset {
             model: "iq-router/qwen-3.8".into(),
             args: "--agent sol --auto --agent=plan -- --agent mate".into(),
             wrapper: "mate".into(),
             ..Preset::new("opencode")
         };
+        let opencode_2 = Compat {
+            model: false,
+            standalone: true,
+        };
         assert_eq!(
-            preset.build(brief(), None, false),
+            preset.build(brief(), None, opencode_2),
             [
                 "mate",
                 "opencode",
+                "--standalone",
                 "--prompt",
                 "# Task: x",
                 "--auto",
@@ -343,7 +383,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            preset.build(None, None, true)[..4],
+            preset.build(None, None, Compat::default())[..4],
             ["mate", "opencode", "--model", "iq-router/qwen-3.8"]
         );
         // Claude Code keeps its options whatever OpenCode is installed.

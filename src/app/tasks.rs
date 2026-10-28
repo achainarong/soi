@@ -862,7 +862,10 @@ pub(super) fn resume_session(state: &App, session: &AgentSession) -> Result<(), 
     if !session.directory.is_dir() {
         return Err("The session directory is missing. Restore its worktree first.".into());
     }
-    let command = session.resume_command()?;
+    let mut command = session.resume_command()?;
+    if crate::presets::Compat::of(&command[0], &agent_path(state)).standalone {
+        command.insert(1, "--standalone".into());
+    }
     // Never change the cwd of an existing running process. Reuse the workspace
     // it ran in while it exists, in whichever window, else one at the same
     // directory; otherwise open a new one at the recorded directory.
