@@ -166,7 +166,6 @@ pub(super) fn group_row(state: &App, id: Uuid, name: &str, collapsed: bool) -> g
         }
     });
     let label = sidebar_name(state, Item::Group(id), name, "group-name");
-    attach_inline_rename(&label, state, Item::Group(id));
     let content = gtk::Box::new(gtk::Orientation::Horizontal, 4);
     content.set_margin_top(8);
     content.append(&arrow);
@@ -187,6 +186,7 @@ pub(super) fn group_row(state: &App, id: Uuid, name: &str, collapsed: bool) -> g
         .selectable(false)
         .build();
 
+    attach_inline_rename(&row, state, Item::Group(id));
     attach_drag(&row, Item::Group(id));
     row
 }
@@ -315,7 +315,7 @@ pub(super) fn sidebar_menu(state: &App, item: Option<Item>) -> gio::Menu {
             );
             specific.append(Some("Ungroup"), Some(&action("group-ungroup", &id)));
             specific.append(
-                Some("Delete group and its workspaces"),
+                Some("Close group and its workspaces"),
                 Some(&action("group-delete", &id)),
             );
         }
@@ -393,20 +393,19 @@ pub(super) fn sidebar_name(state: &App, item: Item, text: &str, class: &str) -> 
     {
         label.set_ellipsize(pango::EllipsizeMode::End);
     }
-    // A workspace name lets clicks through to its row (select the workspace,
-    // focus its terminal) unless it is being renamed; double-clicks on the
-    // row start renaming. Group names keep their own double-click gesture.
-    let passive = matches!(item, Item::Workspace(_));
-    editor.set_can_target(!passive);
-    editor.set_focusable(!passive);
+    // A name lets clicks through to its row (select the workspace, open the
+    // sidebar menu on right-click) unless it is being renamed; double-clicks
+    // on the row start renaming.
+    editor.set_can_target(false);
+    editor.set_focusable(false);
     let weak = Rc::downgrade(state);
     editor.connect_editing_notify(move |editor| {
         if editor.is_editing() {
             return;
         }
         editor.set_editable(false);
-        editor.set_can_target(!passive);
-        editor.set_focusable(!passive);
+        editor.set_can_target(false);
+        editor.set_focusable(false);
         let Some(state) = weak.upgrade() else { return };
         if state.rebuilding.get() || state.closing.get() {
             return;
@@ -485,8 +484,19 @@ pub(super) fn attach_inline_rename(widget: &impl IsA<gtk::Widget>, state: &App, 
         .propagation_phase(gtk::PropagationPhase::Capture)
         .build();
     let weak = Rc::downgrade(state);
-    click.connect_pressed(move |gesture, presses, _, _| {
+    click.connect_pressed(move |gesture, presses, x, y| {
         if presses != 2 {
+            return;
+        }
+        // Double-clicking the row's buttons (collapse, add, close) is just
+        // clicking them twice.
+        if gesture
+            .widget()
+            .and_then(|w| w.pick(x, y, gtk::PickFlags::DEFAULT))
+            .is_some_and(|w| {
+                w.is::<gtk::Button>() || w.ancestor(gtk::Button::static_type()).is_some()
+            })
+        {
             return;
         }
         let Some(state) = weak.upgrade() else { return };
