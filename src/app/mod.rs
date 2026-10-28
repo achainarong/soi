@@ -61,6 +61,9 @@ const DEV_APP_ID: &str = "dev.soi.Soi.Dev";
 const SAVE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 /// How often terminal output is saved, in case soi doesn't quit normally.
 const OUTPUT_SAVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(120);
+/// How long after start the terminals not shown start (see
+/// `start_unshown_terminals`): the shown ones get their size first.
+const UNSHOWN_START_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 /// How much of each terminal's output comes back after a restart.
 const SAVED_LINES: usize = 2000;
 const MIN_OPACITY: f64 = 0.2;
@@ -340,6 +343,14 @@ fn restore_windows(shared: &Rc<Shared>) {
     for window in &windows {
         new_window(shared, Some(window), true);
     }
+    // Once the shown terminals have their size, the others start too, so
+    // agents in every tab come back without visiting it.
+    let weak = Rc::downgrade(shared);
+    glib::timeout_add_local_once(UNSHOWN_START_DELAY, move || {
+        if let Some(shared) = weak.upgrade() {
+            start_unshown_terminals(&shared);
+        }
+    });
 }
 
 /// Sets up what all windows share: styles, settings, saving.

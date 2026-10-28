@@ -461,6 +461,14 @@ impl TermView {
         }
     }
 
+    /// Starts the program of a terminal not shown yet, as if it were `width`
+    /// × `height` pixels; once shown, it's resized to fit.
+    pub fn start_unshown(&self, width: i32, height: i32) {
+        if self.inner.spawn.borrow().is_some() {
+            self.inner.relayout(width, height);
+        }
+    }
+
     /// Types `text` for the program: now, or as soon as it runs (a terminal
     /// starts its program once it has a size).
     pub fn type_ahead(&self, text: &str) {

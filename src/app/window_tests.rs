@@ -1215,6 +1215,9 @@ fn agents_resume_in_their_tabs_after_a_restart() {
         .unwrap();
         drop(socket);
         wait_until(|| tab.resume.borrow().is_some());
+        // Elsewhere when soi starts again: it comes back all the same.
+        new_terminal_workspace(&window, None);
+        let id = tab.id;
         window.window.close();
         let Entry::Workspace(saved) = &saved_window(window.id.get()).sidebar[0] else {
             panic!("workspace not saved")
@@ -1227,8 +1230,8 @@ fn agents_resume_in_their_tabs_after_a_restart() {
         let restored = init_shared(&app);
         restore_windows(&restored);
         let window = &restored.windows()[0];
-        let pane = current_pane(window).unwrap();
-        let tab = window.panes.borrow()[&pane].current().unwrap();
+        let tab = restored.tabs.borrow()[&id].upgrade().unwrap();
+        assert!(!tab.terminal.widget().is_mapped(), "not shown");
         assert!(tab.resume.borrow().is_some(), "kept until the agent quits");
         wait_until(|| tab.terminal.export(10).contains("agent --resume abc-123"));
         wait_until(|| tab.agent.borrow().program.as_deref() == Some("claude"));

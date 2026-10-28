@@ -86,6 +86,29 @@ pub(super) fn save_output(shared: &Shared, windows: &[App]) {
     session::scrollback::prune(&keep);
 }
 
+/// Starts the terminals of every window that aren't shown, at the size of
+/// one that is (they're resized when shown).
+pub(super) fn start_unshown_terminals(shared: &Shared) {
+    for state in shared.windows() {
+        let panes = state.panes.borrow();
+        let tabs: Vec<_> = panes
+            .values()
+            .flat_map(|pane| pane.tabs.borrow().clone())
+            .collect();
+        let shown = tabs
+            .iter()
+            .map(|tab| tab.terminal.widget())
+            .find(|widget| widget.width() > 0 && widget.height() > 0);
+        let (width, height) = match shown {
+            Some(widget) => (widget.width(), widget.height()),
+            None => (state.window.width() * 3 / 4, state.window.height() * 4 / 5),
+        };
+        for tab in &tabs {
+            tab.terminal.start_unshown(width, height);
+        }
+    }
+}
+
 /// A workspace as it's saved: its layout, tabs and folders.
 pub(super) fn workspace_snapshot(state: &App, id: Uuid) -> Option<Workspace> {
     let ui = state.workspaces.borrow().get(&id)?.clone();
