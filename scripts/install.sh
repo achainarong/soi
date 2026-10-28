@@ -7,7 +7,7 @@
 # icon. macOS (Apple Silicon): soi.app goes to ~/Applications, and
 # ~/.local/bin/soi links to it, for shells.
 #
-#   SOI_VERSION=v0.1.19   install that release instead of the latest
+#   SOI_VERSION=v0.1.20   install that release instead of the latest
 #   SOI_BIN_DIR=...       where the soi command goes (default ~/.local/bin)
 #   SOI_APP_DIR=...       macOS: where soi.app goes (default ~/Applications)
 #
