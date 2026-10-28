@@ -78,8 +78,9 @@ pub(in crate::app) fn add_command_tab(
     if let Some(program) = &program {
         terminal.set_program(program);
     }
-    if let Some(saved) = session::scrollback::load(id) {
-        terminal.restore(&saved);
+    let restored = session::scrollback::load(id);
+    if let Some(saved) = &restored {
+        terminal.restore(saved);
         terminal.restore("\x1b[2m── restored ──\x1b[0m\r\n");
     }
 
@@ -121,6 +122,7 @@ pub(in crate::app) fn add_command_tab(
         close: close.clone(),
         cwd,
         saved_output: Cell::new(0),
+        untouched: Cell::new(restored.is_some()),
     });
     info.tabs.borrow_mut().push(tab.clone());
     let index = info.tabs.borrow().len() - 1;
@@ -150,10 +152,11 @@ pub(in crate::app) fn add_command_tab(
     terminal.widget().add_controller(focus);
     let (shared, tab_ref) = (Rc::downgrade(&state.shared), Rc::downgrade(&tab));
     terminal.connect_input(move |input| {
-        if let (Some(shared), Some(tab)) = (shared.upgrade(), tab_ref.upgrade())
-            && let Some(state) = window_of(&shared, tab.terminal.widget())
-        {
-            mirror_input(&state, &tab, input);
+        if let (Some(shared), Some(tab)) = (shared.upgrade(), tab_ref.upgrade()) {
+            tab.untouched.set(false);
+            if let Some(state) = window_of(&shared, tab.terminal.widget()) {
+                mirror_input(&state, &tab, input);
+            }
         }
     });
     let (shared, tab_ref) = (Rc::downgrade(&state.shared), Rc::downgrade(&tab));

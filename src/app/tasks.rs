@@ -932,6 +932,8 @@ pub(super) fn resume_session(state: &App, session: &AgentSession) -> Result<(), 
 pub(super) fn resume_agent(state: &App, tab: &Tab, session: &SessionMetadata) {
     // Kept until the agent quits, also when it can't start now.
     tab.resume.replace(Some(session.clone()));
+    // What it shows is new: save it.
+    tab.untouched.set(false);
     let command = match session.resume_command() {
         Ok(command) => as_installed(state, command),
         Err(e) => {

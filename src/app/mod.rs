@@ -126,6 +126,9 @@ struct Tab {
     cwd: PathBuf,
     /// `TermView::output_serial` when the output was last saved.
     saved_output: Cell<u64>,
+    /// Restored, and nothing happened since but the shell starting: its saved
+    /// output stays as it is (else each restart adds a greeting to it).
+    untouched: Cell<bool>,
 }
 
 /// Live state of one terminal pane. The pane widget is a `gtk::Box`

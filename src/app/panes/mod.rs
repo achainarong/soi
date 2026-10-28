@@ -658,15 +658,16 @@ pub(super) fn mirror_input(state: &App, from: &Tab, input: &Input) {
     if tab.id != ws.current_tab().id || !tab.broadcast.get() {
         return;
     }
-    let terminals: Vec<TermView> = {
+    let tabs: Vec<Rc<Tab>> = {
         let panes = state.panes.borrow();
         tab_panes(&tab)
             .iter()
-            .filter_map(|pane| panes.get(pane)?.terminal())
-            .filter(|terminal| terminal.widget() != from.terminal.widget())
+            .filter_map(|pane| panes.get(pane)?.current())
+            .filter(|tab| tab.terminal.widget() != from.terminal.widget())
             .collect()
     };
-    for terminal in terminals {
-        terminal.type_input(input);
+    for tab in tabs {
+        tab.untouched.set(false);
+        tab.terminal.type_input(input);
     }
 }

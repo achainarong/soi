@@ -66,7 +66,7 @@ pub(super) fn save_output(shared: &Shared, windows: &[App]) {
         for pane in state.panes.borrow().values() {
             for tab in pane.tabs.borrow().iter() {
                 let serial = tab.terminal.output_serial();
-                if serial == tab.saved_output.get() {
+                if serial == tab.saved_output.get() || tab.untouched.get() {
                     continue;
                 }
                 match session::scrollback::save(tab.id, &tab.terminal.export(SAVED_LINES)) {

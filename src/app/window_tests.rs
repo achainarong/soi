@@ -30,6 +30,7 @@ checks![
     layout_drop_waits_for_drag_end_and_cancellation_does_nothing,
     quick_switcher_goes_to_the_workspace_typed,
     terminal_output_comes_back_after_a_restart,
+    restarts_without_typing_dont_pile_up_greetings,
     agents_resume_in_their_tabs_after_a_restart,
     agents_that_never_say_their_session_continue_the_latest,
     context_tracks_shell_directory_changes,
@@ -1150,6 +1151,55 @@ fn terminal_output_comes_back_after_a_restart() {
             .expect("old output is back");
         assert!(before < text.find("restored").unwrap());
         assert!(text.find("restored").unwrap() < text.find("after the restart").unwrap());
+        window.window.close();
+    });
+}
+
+fn restarts_without_typing_dont_pile_up_greetings() {
+    isolated("restarts_without_typing_dont_pile_up_greetings", || {
+        use std::os::unix::fs::PermissionsExt;
+        let shell = home_dir().join("greeting-shell");
+        fs::write(
+            &shell,
+            "#!/bin/sh\nprintf 'greeting\\r\\n'\nexec sleep 60\n",
+        )
+        .unwrap();
+        fs::set_permissions(&shell, fs::Permissions::from_mode(0o700)).unwrap();
+        let shell = shell.to_string_lossy().into_owned();
+        let (app, shared) = application();
+        shared.settings.borrow_mut().shell = Some(shell.clone());
+        let window = new_window(&shared, None, true);
+        let pane = current_pane(&window).unwrap();
+        let id = window.panes.borrow()[&pane].current().unwrap().id;
+        // Starts soi again: the tab, once its shell has greeted.
+        let restart = |window: &App, shared: &Rc<Shared>| {
+            let tab = shared.tabs.borrow()[&id].upgrade().unwrap();
+            // The greeting of this start, below what came back.
+            wait_until(|| {
+                let text = tab.terminal.export(100);
+                text[text.rfind("restored").unwrap_or(0)..].contains("greeting")
+            });
+            save_output(shared, &shared.windows());
+            window.close_confirmed.set(true);
+            window.window.close();
+            let restored = init_shared(&app);
+            restored.settings.borrow_mut().shell = Some(shell.clone());
+            restore_windows(&restored);
+            let tab = restored.tabs.borrow()[&id].upgrade().unwrap();
+            wait_until(|| tab.terminal.export(100).contains("restored"));
+            (restored.windows()[0].clone(), restored, tab)
+        };
+        let (window, shared, _) = restart(&window, &shared);
+        let (window, shared, tab) = restart(&window, &shared);
+        let text = tab.terminal.export(100);
+        assert_eq!(text.matches("restored").count(), 1, "{text}");
+
+        // Used since: saved again, with what it shows now.
+        tab.untouched.set(false);
+        let (window, _shared, tab) = restart(&window, &shared);
+        let text = tab.terminal.export(100);
+        assert_eq!(text.matches("restored").count(), 2, "{text}");
+        window.close_confirmed.set(true);
         window.window.close();
     });
 }
