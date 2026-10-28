@@ -480,10 +480,7 @@ impl Keybindings {
     pub fn save(&self) -> io::Result<()> {
         let path =
             path().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no home directory"))?;
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        fs::write(path, self.render())
+        crate::dirs::write_atomic(&path, self.render().as_bytes(), 0o666)
     }
 
     fn render(&self) -> String {

@@ -406,12 +406,7 @@ pub mod scrollback {
                 _ => Ok(()),
             };
         }
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        let tmp = path.with_extension("tmp");
-        fs::write(&tmp, text)?;
-        fs::rename(&tmp, &path)
+        crate::dirs::write_atomic(&path, text.as_bytes(), 0o666)
     }
 
     /// Deletes saved output of tabs that are gone.
@@ -456,16 +451,12 @@ impl Session {
         }
     }
 
-    /// Writes the session atomically (temp file + rename).
+    /// Writes the session atomically (see `dirs::write_atomic`).
     pub fn save(&self) -> io::Result<()> {
         let path = session_path()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no home directory"))?;
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        let tmp = path.with_extension("json.tmp");
-        fs::write(&tmp, serde_json::to_string_pretty(self)?)?;
-        fs::rename(tmp, path)
+        let json = serde_json::to_string_pretty(self)?;
+        crate::dirs::write_atomic(&path, json.as_bytes(), 0o666)
     }
 }
 

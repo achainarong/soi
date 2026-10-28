@@ -693,26 +693,7 @@ impl History {
     }
 
     pub fn save(&self, path: &Path) -> io::Result<()> {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let temp = path.with_extension(format!("{}.tmp", Uuid::new_v4()));
-        let result = (|| {
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&temp)?;
-            file.write_all(&serde_json::to_vec_pretty(self)?)?;
-            file.sync_all()?;
-            fs::rename(&temp, path)
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temp);
-        }
-        result
+        crate::dirs::write_atomic(path, &serde_json::to_vec_pretty(self)?, 0o600)
     }
 }
 

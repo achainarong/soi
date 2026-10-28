@@ -1114,13 +1114,8 @@ pub fn display_name(program: &str) -> &str {
 }
 
 fn write_atomically(path: &Path, text: &str) -> Result<(), String> {
-    let fail = |err: io::Error| format!("cannot write {}: {err}", path.display());
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(fail)?;
-    }
-    let tmp = path.with_extension("soi-tmp");
-    fs::write(&tmp, text).map_err(fail)?;
-    fs::rename(&tmp, path).map_err(fail)
+    crate::dirs::write_atomic(path, text.as_bytes(), 0o666)
+        .map_err(|err| format!("cannot write {}: {err}", path.display()))
 }
 
 #[cfg(test)]

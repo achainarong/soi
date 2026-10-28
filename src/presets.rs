@@ -307,12 +307,8 @@ fn complete(presets: Vec<Preset>) -> Vec<Preset> {
 }
 
 pub fn save(presets: &[Preset]) -> io::Result<()> {
-    let path = path();
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
     let json = serde_json::to_string_pretty(presets).map_err(io::Error::other)?;
-    fs::write(path, json + "\n")
+    crate::dirs::write_atomic(&path(), (json + "\n").as_bytes(), 0o666)
 }
 
 #[cfg(test)]

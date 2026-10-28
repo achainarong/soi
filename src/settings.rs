@@ -8,7 +8,7 @@
 
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::theme::key_values;
 
@@ -91,11 +91,8 @@ pub fn valid_profile_name(name: &str) -> bool {
     !name.trim().is_empty() && name == name.trim() && !name.contains(['/', '\0']) && name != "."
 }
 
-fn write_file(path: &PathBuf, text: &str) -> io::Result<()> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    fs::write(path, text)
+fn write_file(path: &Path, text: &str) -> io::Result<()> {
+    crate::dirs::write_atomic(path, text.as_bytes(), 0o666)
 }
 
 /// `existing` with the given keys set (or removed, for `None`); comments and
