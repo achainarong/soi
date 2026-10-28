@@ -11,9 +11,10 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Read, Write};
+use std::ops::ControlFlow;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -1049,75 +1050,32 @@ fn login_path(shell: &str) -> Option<String> {
 }
 
 fn probe_path(command: &mut Command, framed: bool, timeout: Duration) -> Option<String> {
-    use std::os::fd::AsRawFd;
-
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let result = (|| {
-        let mut stdout = child.stdout.take()?;
-        let fd = stdout.as_raw_fd();
-        // SAFETY: stdout owns this live pipe; preserve its other descriptor flags.
-        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-            return None;
+    let mut output = Vec::new();
+    let mut found = None;
+    let status = crate::probe::run(command, timeout, |chunk| {
+        output.extend_from_slice(chunk);
+        if output.len() > MAX_SHELL_OUTPUT {
+            output.drain(..output.len() - MAX_SHELL_OUTPUT);
         }
-        let started = Instant::now();
-        let mut output = Vec::new();
-        let mut found = None;
-        let mut chunk = [0; 8192];
-        loop {
-            let status = child.try_wait().ok()?;
-            // Drain while the child runs: a chatty .zshrc can fill the pipe.
-            loop {
-                if started.elapsed() >= timeout {
-                    return None;
-                }
-                match stdout.read(&mut chunk) {
-                    Ok(0) => break,
-                    Ok(len) => {
-                        output.extend_from_slice(&chunk[..len]);
-                        if output.len() > MAX_SHELL_OUTPUT {
-                            output.drain(..output.len() - MAX_SHELL_OUTPUT);
-                        }
-                        if framed && let Some(path) = framed_path(&output) {
-                            found = Some(path);
-                        }
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-                    Err(_) => return None,
-                }
-            }
-            if let Some(status) = status {
-                if !status.success() {
-                    return None;
-                }
-                return if framed {
-                    found
-                } else {
-                    // Keep the existing login-shell behavior for bash and fish.
-                    std::str::from_utf8(&output)
-                        .ok()?
-                        .lines()
-                        .rev()
-                        .find(|line| !line.trim().is_empty())
-                        .map(String::from)
-                };
-            }
-            if started.elapsed() < timeout {
-                std::thread::sleep(Duration::from_millis(20))
-            }
+        if framed && let Some(path) = framed_path(&output) {
+            found = Some(path);
         }
-    })();
-    // Also reap unsuccessful/timed-out probes; never wait for pipe EOF from a
-    // background process a startup script may have left behind.
-    let _ = child.kill();
-    let _ = child.wait();
-    result
+        ControlFlow::Continue(())
+    })?;
+    if !status.success() {
+        return None;
+    }
+    if framed {
+        found
+    } else {
+        // Keep the existing login-shell behavior for bash and fish.
+        std::str::from_utf8(&output)
+            .ok()?
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .map(String::from)
+    }
 }
 
 fn framed_path(output: &[u8]) -> Option<String> {

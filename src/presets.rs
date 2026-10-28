@@ -5,12 +5,12 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Read};
-use std::os::fd::AsRawFd;
+use std::io;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
@@ -249,54 +249,18 @@ fn major_version_of(program: &str, path: &str) -> Option<u32> {
 /// or wait for pipe EOF held by a background descendant of the helper.
 fn probe_major_version(command: &mut Command, timeout: Duration) -> Option<u32> {
     const LIMIT: usize = 64 * 1024;
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let result = (|| {
-        let mut stdout = child.stdout.take()?;
-        let fd = stdout.as_raw_fd();
-        // SAFETY: stdout owns the live descriptor throughout both calls.
-        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-            return None;
+    let mut output = Vec::new();
+    let status = crate::probe::run(command, timeout, |chunk| {
+        if chunk.len() > LIMIT - output.len() {
+            return ControlFlow::Break(());
         }
-        let started = Instant::now();
-        let mut output = Vec::new();
-        let mut buffer = [0u8; 4096];
-        loop {
-            let status = child.try_wait().ok()?;
-            loop {
-                if started.elapsed() >= timeout {
-                    return None;
-                }
-                match stdout.read(&mut buffer) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        if n > LIMIT - output.len() {
-                            return None;
-                        }
-                        output.extend_from_slice(&buffer[..n]);
-                    }
-                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                    Err(_) => return None,
-                }
-            }
-            if let Some(status) = status {
-                return status
-                    .success()
-                    .then(|| major_version(&String::from_utf8_lossy(&output)))
-                    .flatten();
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    })();
-    let _ = child.kill();
-    let _ = child.wait();
-    result
+        output.extend_from_slice(chunk);
+        ControlFlow::Continue(())
+    })?;
+    status
+        .success()
+        .then(|| major_version(&String::from_utf8_lossy(&output)))
+        .flatten()
 }
 
 /// `2` in `opencode v2.0.28` or `2.0.28`.
