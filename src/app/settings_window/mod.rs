@@ -218,7 +218,12 @@ window.soi-tools row:selected, window.soi-tools textview text selection {{ backg
 popover list, popover listview, popover row {{ background-color: transparent; color: {fg}; }}
 popover row:selected, popover row:selected:hover {{ background-color: {selected}; color: {fg}; }}
 popover check, popover radio {{ color: {fg}; }}
-.agents-panel dropdown {{ margin: 2px 8px; }}
+.agents-filters dropdown > button {{ background-color: {field}; border: none; color: {dim}; }}
+.agents-filters dropdown > button:hover {{ background-color: {hover}; color: {fg}; }}
+.agents-notices .agents-clear {{ color: {dim}; }}
+.agents-notices .agents-clear:hover {{ background-color: {hover}; color: {fg}; }}
+.agents-notices list row {{ background-color: {field}; }}
+.agents-notices list row:hover {{ background-color: {hover}; }}
 .agents-panel {{ border-left: 1px solid {border}; }}
 .agents-notices {{ border-top: 1px solid {border}; }}
 ",

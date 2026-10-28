@@ -101,6 +101,7 @@ pub(super) fn build(shown: bool, width: i32) -> AgentsUi {
     notices.add_css_class("navigation-sidebar");
     let clear = gtk::Button::with_label("Clear all");
     clear.add_css_class("flat");
+    clear.add_css_class("agents-clear");
     clear.set_action_name(Some("win.agents-notices-clear"));
     let notices_header = gtk::Box::new(gtk::Orientation::Horizontal, 4);
     notices_header.add_css_class("soi-toolbar");
@@ -154,8 +155,13 @@ pub(super) fn build(shown: bool, width: i32) -> AgentsUi {
         "Ready for review",
         "Finished",
     ]);
-    panel.append(&activity_filter);
-    panel.append(&task_filter);
+    // Side by side: they narrow the list, not head it.
+    let filters = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    filters.add_css_class("agents-filters");
+    filters.set_homogeneous(true);
+    filters.append(&activity_filter);
+    filters.append(&task_filter);
+    panel.append(&filters);
     panel.append(&split);
     // Which soi this is, faint in the bottom right corner.
     panel.append(
@@ -225,6 +231,13 @@ pub(super) fn connect(state: &App) {
         }
     });
 
+    let shared = Rc::downgrade(&state.shared);
+    state.agents.notices.connect_row_activated(move |_, row| {
+        if let (Some(shared), Ok(id)) = (shared.upgrade(), Uuid::parse_str(&row.widget_name())) {
+            remove_notice(&shared, id);
+            focus_tab(&shared, id);
+        }
+    });
     let shared = Rc::downgrade(&state.shared);
     state.agents.list.connect_row_activated(move |_, row| {
         if let (Some(shared), Ok(id)) = (shared.upgrade(), Uuid::parse_str(&row.widget_name())) {
@@ -392,7 +405,18 @@ fn command_finished(shared: &Rc<Shared>, tab: &Rc<Tab>, finished: &crate::term::
     let title = format!("{workspace}: {command} {how}");
     let body = format!("after {}", elapsed(finished.took));
     notify_desktop(shared, tab.id, &title, &body);
-    add_notice(shared, tab.id, &format!("{title} {body}"));
+    let notice = Notice {
+        workspace,
+        what: format!("{command} {how} {body}"),
+        // Green when it worked, red (as for an agent that asks) when not.
+        state: Some(if finished.exit == Some(0) {
+            AgentState::Done
+        } else {
+            AgentState::Input
+        }),
+        message: String::new(),
+    };
+    add_notice(shared, tab.id, &notice);
 }
 
 /// Starts watching the terminals of all windows.
@@ -1143,26 +1167,35 @@ fn announce(shared: &Rc<Shared>, tab: &Rc<Tab>, agent: &Agent) {
         AgentState::Exited => "exited",
         AgentState::Working => return,
     };
-    let title = format!(
-        "{workspace}: {} {what}",
-        agent.program.as_deref().unwrap_or("agent")
-    );
-    let mut text = title.clone();
-    if !agent.message.is_empty() {
-        text.push_str(" — ");
-        text.push_str(&agent.message);
-    }
+    let program = agent.program.as_deref().unwrap_or("agent");
+    let title = format!("{workspace}: {program} {what}");
     notify_desktop(shared, tab.id, &title, &agent.message);
-    add_notice(shared, tab.id, &text);
+    let notice = Notice {
+        workspace,
+        what: format!("{program} {what}"),
+        state: Some(agent.state),
+        message: agent.message.clone(),
+    };
+    add_notice(shared, tab.id, &notice);
+}
+
+/// What a notification under the agents says.
+struct Notice {
+    workspace: String,
+    /// "claude needs your input".
+    what: String,
+    /// Colors `what` as the panel colors this state.
+    state: Option<AgentState>,
+    message: String,
 }
 
 /// Adds a notification under the agents in every window, in place of the
 /// tab's earlier one; it stays until dismissed or the tab is looked at.
-fn add_notice(shared: &Rc<Shared>, tab: Uuid, text: &str) {
+fn add_notice(shared: &Rc<Shared>, tab: Uuid, notice: &Notice) {
     remove_notice(shared, tab);
     for state in shared.windows() {
         let ui = &state.agents;
-        ui.notices.prepend(&notice_row(shared, tab, text));
+        ui.notices.prepend(&notice_row(shared, tab, notice));
         while let Some(old) = ui.notices.row_at_index(MAX_NOTICES) {
             ui.notices.remove(&old);
         }
@@ -1173,41 +1206,52 @@ fn add_notice(shared: &Rc<Shared>, tab: Uuid, text: &str) {
     }
 }
 
-fn notice_row(shared: &Rc<Shared>, tab: Uuid, text: &str) -> gtk::ListBoxRow {
-    let label = gtk::Label::builder()
-        .label(text)
-        .tooltip_text(text)
+fn notice_row(shared: &Rc<Shared>, tab: Uuid, notice: &Notice) -> gtk::ListBoxRow {
+    let workspace = gtk::Label::builder()
+        .label(&notice.workspace)
         .xalign(0.0)
         .hexpand(true)
-        .wrap(true)
-        .wrap_mode(pango::WrapMode::WordChar)
-        .lines(3)
         .ellipsize(pango::EllipsizeMode::End)
+        .css_classes(["ws-name"])
         .build();
-    let show = gtk::Button::with_label("Show");
-    show.add_css_class("flat");
-    show.set_valign(gtk::Align::Center);
     let dismiss = gtk::Button::from_icon_name("window-close-symbolic");
-    dismiss.add_css_class("flat");
-    dismiss.set_valign(gtk::Align::Center);
+    dismiss.add_css_class("ws-close");
+    dismiss.set_valign(gtk::Align::Start);
     dismiss.set_tooltip_text(Some("Dismiss"));
-    let content = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    let top = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    top.append(&workspace);
+    top.append(&dismiss);
+    let what = gtk::Label::builder()
+        .label(&notice.what)
+        .xalign(0.0)
+        .ellipsize(pango::EllipsizeMode::End)
+        .css_classes(["caption"])
+        .build();
+    set_state_class(&what, notice.state);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 2);
     content.add_css_class("agents-notice");
-    content.append(&label);
-    content.append(&show);
-    content.append(&dismiss);
+    content.append(&top);
+    content.append(&what);
+    if !notice.message.is_empty() {
+        content.append(
+            &gtk::Label::builder()
+                .label(&notice.message)
+                .tooltip_text(&notice.message)
+                .xalign(0.0)
+                .wrap(true)
+                .wrap_mode(pango::WrapMode::WordChar)
+                .lines(2)
+                .ellipsize(pango::EllipsizeMode::End)
+                .css_classes(["dim-label", "caption"])
+                .build(),
+        );
+    }
+    // Clicking it goes to the agent (see `connect`).
     let row = gtk::ListBoxRow::builder()
         .child(&content)
-        .activatable(false)
         .name(tab.to_string())
+        .tooltip_text("Go to this agent")
         .build();
-    let weak = Rc::downgrade(shared);
-    show.connect_clicked(move |_| {
-        if let Some(shared) = weak.upgrade() {
-            remove_notice(&shared, tab);
-            focus_tab(&shared, tab);
-        }
-    });
     let weak = Rc::downgrade(shared);
     dismiss.connect_clicked(move |_| {
         if let Some(shared) = weak.upgrade() {
