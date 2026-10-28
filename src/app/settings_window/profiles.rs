@@ -55,9 +55,11 @@ pub(in crate::app) fn refresh_profile_ui(state: &App) {
 }
 
 /// The "Profile" rows at the top of the settings window: a switcher with
-/// Duplicate/Delete, and the name with Rename.
+/// Duplicate/Delete, and the name with Rename. Default can be neither
+/// deleted nor renamed, so there is always a profile to fall back to.
 pub(in crate::app) fn profile_section(state: &App) -> (gtk::Widget, gtk::Widget) {
     let profile = state.shared.profile.borrow().clone();
+    let is_default = profile == settings::DEFAULT_PROFILE;
 
     let duplicate = gtk::Button::with_label("Duplicate");
     let weak = Rc::downgrade(state);
@@ -71,7 +73,7 @@ pub(in crate::app) fn profile_section(state: &App) -> (gtk::Widget, gtk::Widget)
         switch_profile(&state, &name);
     });
     let delete = gtk::Button::with_label("Delete");
-    delete.set_sensitive(settings::list_profiles().len() > 1);
+    delete.set_sensitive(!is_default);
     let weak = Rc::downgrade(state);
     delete.connect_clicked(move |_| {
         let Some(state) = weak.upgrade() else { return };
@@ -79,9 +81,7 @@ pub(in crate::app) fn profile_section(state: &App) -> (gtk::Widget, gtk::Widget)
         if let Err(err) = settings::delete_profile(&current) {
             return crate::log::write(&format!("failed to delete profile: {err}"));
         }
-        if let Some(next) = settings::list_profiles().first() {
-            switch_profile(&state, next);
-        }
+        switch_profile(&state, settings::DEFAULT_PROFILE);
     });
     let picker = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let dropdown = profile_dropdown(state);
@@ -92,6 +92,8 @@ pub(in crate::app) fn profile_section(state: &App) -> (gtk::Widget, gtk::Widget)
 
     let name = gtk::Entry::builder().text(&profile).build();
     let rename = gtk::Button::with_label("Rename");
+    name.set_sensitive(!is_default);
+    rename.set_sensitive(!is_default);
     let weak = Rc::downgrade(state);
     let entry_ref = name.downgrade();
     let do_rename = Rc::new(move || {

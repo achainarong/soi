@@ -135,7 +135,7 @@ fn migrate() -> io::Result<()> {
     )
 }
 
-/// All profile names, sorted; there is always at least one.
+/// All profile names, sorted; Default is always among them.
 pub fn list_profiles() -> Vec<String> {
     if let Err(err) = migrate() {
         crate::log::write(&format!("failed to set up profiles: {err}"));
@@ -153,14 +153,14 @@ pub fn list_profiles() -> Vec<String> {
             Some(path.file_stem()?.to_string_lossy().into_owned())
         })
         .collect();
-    if names.is_empty() {
+    if !names.iter().any(|n| n == DEFAULT_PROFILE) {
         names.push(DEFAULT_PROFILE.into());
     }
     names.sort_by_key(|n| n.to_lowercase());
     names
 }
 
-/// The active profile, falling back to the first one that exists.
+/// The active profile, falling back to Default.
 pub fn active_profile() -> String {
     let profiles = list_profiles();
     let text = config_path()
@@ -172,7 +172,7 @@ pub fn active_profile() -> String {
         .find(|(k, _)| k == PROFILE)
         .map(|(_, v)| v)
         .filter(|name| profiles.contains(name))
-        .unwrap_or_else(|| profiles[0].clone())
+        .unwrap_or_else(|| DEFAULT_PROFILE.into())
 }
 
 pub fn set_active_profile(name: &str) -> io::Result<()> {
@@ -182,7 +182,19 @@ pub fn set_active_profile(name: &str) -> io::Result<()> {
     write_file(&path, &update_lines(&text, &[(PROFILE, Some(name.into()))]))
 }
 
+/// Fails for Default, which always stays.
+fn not_default(name: &str) -> io::Result<()> {
+    if name == DEFAULT_PROFILE {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "the Default profile can't be renamed or deleted",
+        ));
+    }
+    Ok(())
+}
+
 pub fn rename_profile(old: &str, new: &str) -> io::Result<()> {
+    not_default(old)?;
     let (from, to) = (profile_path(old)?, profile_path(new)?);
     if to.exists() {
         return Err(io::Error::new(
@@ -203,6 +215,7 @@ pub fn rename_profile(old: &str, new: &str) -> io::Result<()> {
 }
 
 pub fn delete_profile(name: &str) -> io::Result<()> {
+    not_default(name)?;
     match fs::remove_file(profile_path(name)?) {
         Err(err) if err.kind() != io::ErrorKind::NotFound => Err(err),
         _ => Ok(()),
@@ -404,13 +417,11 @@ mod tests {
         assert_eq!(active_profile(), "Work", "renaming keeps it active");
         assert_eq!(Settings::load_profile("Work"), default);
         assert!(rename_profile("Work", DEFAULT_PROFILE).is_err());
+        assert!(rename_profile(DEFAULT_PROFILE, "Home").is_err());
+        assert!(delete_profile(DEFAULT_PROFILE).is_err());
 
         delete_profile("Work").unwrap();
-        assert_eq!(
-            active_profile(),
-            DEFAULT_PROFILE,
-            "falls back to a remaining profile"
-        );
+        assert_eq!(active_profile(), DEFAULT_PROFILE, "falls back to Default");
         fs::remove_dir_all(&dir).unwrap();
     }
 
