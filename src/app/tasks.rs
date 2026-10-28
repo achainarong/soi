@@ -421,6 +421,9 @@ pub(super) fn create(state: &App, group: Option<Uuid>) {
     more.append(&model);
     let with_brief =
         gtk::CheckButton::with_label("Give the agent the task brief as its first prompt");
+    // On by default: it's folded away under Advanced settings, where an
+    // unticked box went unnoticed and agents started without their task.
+    with_brief.set_active(true);
     with_brief.set_sensitive(false);
     more.append(&with_brief);
     more.append(&requests.widget);
