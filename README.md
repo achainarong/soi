@@ -87,6 +87,9 @@ your workspaces and panes branch off the sidebar.
 
 ## Install
 
+New to soi? [Getting started](docs/getting-started.md) walks you from a
+release download to starting Claude Code, OpenCode or Pi for a task.
+
 ### Download
 
 [Releases](https://github.com/achainarong/soi/releases) have soi with GTK
