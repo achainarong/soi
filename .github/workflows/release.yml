@@ -21,7 +21,7 @@ jobs:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # The tag says the version, whatever Cargo.toml has.
       - name: Take the version from the tag
@@ -40,7 +40,7 @@ jobs:
       - name: Build the AppImage
         run: make appimage
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: linux-${{ runner.arch }}
           path: target/soi-*.AppImage
@@ -49,12 +49,16 @@ jobs:
   macos:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # The tag says the version, whatever Cargo.toml has.
       - name: Take the version from the tag
         if: startsWith(github.ref, 'refs/tags/v')
         run: VERSION=${GITHUB_REF_NAME#v} perl -pi -e 's/^version = ".*"/version = "$ENV{VERSION}"/ if 1 .. /^\[features\]/' Cargo.toml
+
+      # Xcode 16's install_name_tool can't edit Homebrew's newer libraries.
+      - name: Use Xcode 26
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app
 
       - name: Install GTK 4
         run: brew install gtk4 pkg-config librsvg
@@ -68,7 +72,7 @@ jobs:
           make bundle
           ditto -c -k --keepParent target/soi.app target/soi-macos-arm64.zip
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: macos-arm64
           path: target/soi-macos-arm64.zip
@@ -81,7 +85,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true

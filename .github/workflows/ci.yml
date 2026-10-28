@@ -13,7 +13,7 @@ jobs:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install GTK 4
         run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev
