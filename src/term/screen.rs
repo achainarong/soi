@@ -2108,7 +2108,7 @@ impl Copy {
     fn parse(targets: &[u8], data: &[u8]) -> Option<Self> {
         use base64::Engine;
         use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
-        if data == b"?" || data.len() / 4 * 3 > MAX_CLIPBOARD_BYTES {
+        if data == b"?" || data.len() > MAX_CLIPBOARD_BYTES.div_ceil(3) * 4 {
             return None;
         }
         let engine = GeneralPurpose::new(
@@ -2116,6 +2116,9 @@ impl Copy {
             GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
         );
         let text = String::from_utf8(engine.decode(data).ok()?).ok()?;
+        if text.len() > MAX_CLIPBOARD_BYTES || text.contains('\0') {
+            return None;
+        }
         // No targets means the clipboard; `s` (selection) is it too.
         let primary = targets.contains(&b'p');
         let clipboard = targets.is_empty() || targets.iter().any(|t| matches!(t, b'c' | b's'));

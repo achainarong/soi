@@ -11,6 +11,11 @@ macro_rules! checks {
 }
 
 checks![
+    closed_windows_and_terminals_release_their_owners,
+    reports_finish_at_newline_without_waiting_for_disconnect,
+    idle_report_clients_time_out_and_connection_floods_are_bounded,
+    closed_task_details_release_the_editor_and_workspace,
+    switcher_popovers_are_released_and_do_not_block_window_teardown,
     switcher_lists_open_and_closed_windows_aligned,
     sidebar_names_rename_inline_and_support_commit_cancel_and_empty_input,
     inline_rename_commits_on_focus_loss_and_group_arrows_still_toggle,
@@ -53,6 +58,204 @@ checks![
     agents_started_through_a_wrapper_count_as_the_agent,
     skills_commands_and_collections_are_picked_by_clicking,
 ];
+
+fn closed_windows_and_terminals_release_their_owners() {
+    isolated("closed_windows_and_terminals_release_their_owners", || {
+        let (_app, shared) = application();
+        let first = new_window(&shared, None, true);
+        for _ in 0..5 {
+            let state = new_window(&shared, None, true);
+            let weak = Rc::downgrade(&state);
+            let window = state.window.downgrade();
+            let tabs: Vec<_> = state
+                .panes
+                .borrow()
+                .values()
+                .flat_map(|pane| {
+                    pane.tabs
+                        .borrow()
+                        .iter()
+                        .map(Rc::downgrade)
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            assert!(!tabs.is_empty());
+            state.close_confirmed.set(true);
+            state.window.close();
+            drop(state);
+            wait_until(|| weak.upgrade().is_none());
+            assert!(weak.upgrade().is_none(), "closed window retains its State");
+            assert!(
+                window.upgrade().is_none(),
+                "closed window object is retained"
+            );
+            assert!(
+                tabs.iter().all(|tab| tab.upgrade().is_none()),
+                "closed tabs remain alive"
+            );
+        }
+        first.close_confirmed.set(true);
+        first.window.close();
+    });
+}
+
+fn switcher_popovers_are_released_and_do_not_block_window_teardown() {
+    isolated(
+        "switcher_popovers_are_released_and_do_not_block_window_teardown",
+        || {
+            let (_app, shared) = application();
+            let state = new_window(&shared, None, true);
+            for _ in 0..3 {
+                switcher::open(&state);
+                let popover =
+                    panel::find_descendant(state.stack.upcast_ref(), &|w| w.is::<gtk::Popover>())
+                        .unwrap()
+                        .downcast::<gtk::Popover>()
+                        .unwrap();
+                let weak = popover.downgrade();
+                wait_until(|| popover.is_mapped());
+                popover.popdown();
+                drop(popover);
+                wait_until(|| weak.upgrade().is_none());
+            }
+            switcher::open(&state);
+            let weak = Rc::downgrade(&state);
+            state.close_confirmed.set(true);
+            state.window.close();
+            drop(state);
+            wait_until(|| weak.upgrade().is_none());
+        },
+    );
+}
+
+fn reports_finish_at_newline_without_waiting_for_disconnect() {
+    isolated(
+        "reports_finish_at_newline_without_waiting_for_disconnect",
+        || {
+            use std::io::Write;
+            let (_app, shared) = application();
+            panel::listen(&shared);
+            let state = new_window(&shared, None, true);
+            let tab = state
+                .panes
+                .borrow()
+                .values()
+                .next()
+                .unwrap()
+                .current()
+                .unwrap();
+            let mut socket =
+                std::os::unix::net::UnixStream::connect(crate::agents::socket_path().unwrap())
+                    .unwrap();
+            writeln!(
+                socket,
+                r#"{{"tab":"{}","state":"input","message":"newline report"}}"#,
+                tab.id
+            )
+            .unwrap();
+            wait_until(|| tab.agent.borrow().message == "newline report");
+            drop(socket);
+            state.close_confirmed.set(true);
+            state.window.close();
+        },
+    );
+}
+
+fn idle_report_clients_time_out_and_connection_floods_are_bounded() {
+    isolated(
+        "idle_report_clients_time_out_and_connection_floods_are_bounded",
+        || {
+            use std::io::{Read, Write};
+            use std::os::unix::net::UnixStream;
+            let (_app, shared) = application();
+            panel::listen(&shared);
+            let path = crate::agents::socket_path().unwrap();
+            let state = new_window(&shared, None, true);
+            let tab = state
+                .panes
+                .borrow()
+                .values()
+                .next()
+                .unwrap()
+                .current()
+                .unwrap();
+            let closed = |socket: &mut UnixStream| match socket.read(&mut [0u8; 1]) {
+                Ok(0) => true,
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe
+                    ) =>
+                {
+                    true
+                }
+                _ => false,
+            };
+            let mut idle = UnixStream::connect(&path).unwrap();
+            idle.set_nonblocking(true).unwrap();
+            wait_until(|| closed(&mut idle));
+            let context = glib::MainContext::default();
+            let mut clients = Vec::new();
+            for _ in 0..32 {
+                clients.push(UnixStream::connect(&path).unwrap());
+                for _ in 0..100 {
+                    if !context.pending() {
+                        break;
+                    }
+                    context.iteration(false);
+                }
+            }
+            let mut excess = UnixStream::connect(&path).unwrap();
+            writeln!(
+                excess,
+                r#"{{"tab":"{}","state":"input","message":"must reject excess"}}"#,
+                tab.id
+            )
+            .unwrap();
+            excess.set_nonblocking(true).unwrap();
+            wait_until(|| closed(&mut excess));
+            assert_ne!(tab.agent.borrow().message, "must reject excess");
+            drop(clients);
+            // Listener lifetime follows Shared, rather than a forgotten reference.
+            shared.report_listener.take();
+            assert!(UnixStream::connect(&path).is_err());
+            state.close_confirmed.set(true);
+            state.window.close();
+        },
+    );
+}
+
+fn closed_task_details_release_the_editor_and_workspace() {
+    isolated(
+        "closed_task_details_release_the_editor_and_workspace",
+        || {
+            let (_app, shared) = application();
+            let state = new_window(&shared, None, true);
+            let ws = active_workspace(&state).unwrap();
+            ws.task.replace(Some(crate::tasks::TaskContext::new(
+                "Memory check".into(),
+                ws.root_dir.clone(),
+            )));
+            let weak_ws = Rc::downgrade(&ws);
+            task_view::open(&state);
+            let name = format!("task-view-{}", state.active.get().unwrap());
+            let window = gtk::Window::list_toplevels()
+                .into_iter()
+                .filter_map(|w| w.downcast::<gtk::Window>().ok())
+                .find(|w| w.widget_name() == name)
+                .unwrap();
+            let weak_window = window.downgrade();
+            window.close();
+            drop(window);
+            wait_until(|| weak_window.upgrade().is_none());
+            drop(ws);
+            state.close_confirmed.set(true);
+            state.window.close();
+            drop(state);
+            wait_until(|| weak_ws.upgrade().is_none());
+        },
+    );
+}
 
 // Run actual GTK window/session lifecycles in a child with its own home
 // and state directory, so tests cannot overwrite the user's session.

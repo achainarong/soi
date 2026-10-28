@@ -669,9 +669,19 @@ pub(super) fn open(state: &App) {
     }
     window.add_controller(shortcuts);
 
-    // The close request owns the view: it lives exactly as long as the window.
-    let owner = view.clone();
-    window.connect_close_request(move |_| confirm_close(&owner));
+    // Retain unsaved edits while a close is cancelled, but release the view
+    // (and its workspace/editor/polling) when the close is accepted.
+    let owner_slot = RefCell::new(Some(view.clone()));
+    window.connect_close_request(move |_| {
+        let Some(owner) = owner_slot.borrow().clone() else {
+            return glib::Propagation::Proceed;
+        };
+        let result = confirm_close(&owner);
+        if result == glib::Propagation::Proceed {
+            owner_slot.take();
+        }
+        result
+    });
 
     refresh_plan(&view);
     let weak = Rc::downgrade(&view);

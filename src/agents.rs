@@ -40,7 +40,7 @@ pub const DEFAULT_AGENTS: &[&str] = &[
 pub const BUSY_WINDOW: Duration = Duration::from_millis(1500);
 
 /// The largest report accepted on the socket.
-const MAX_REPORT_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_REPORT_BYTES: usize = 64 * 1024;
 
 /// Marks the hook commands and the plugin file as soi's own.
 const MARKER: &str = "soi-agent-integration";
@@ -340,9 +340,22 @@ impl SessionMetadata {
 }
 
 impl Report {
-    pub fn parse(bytes: &[u8]) -> Option<(Uuid, State, String)> {
+    pub fn parse(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() > MAX_REPORT_BYTES {
+            return None;
+        }
         let report: Report = serde_json::from_slice(bytes).ok()?;
-        Some((report.tab, State::parse(&report.state)?, report.message))
+        State::parse(&report.state)?;
+        // These fields are displayed through GTK's NUL-terminated strings.
+        if report.message.contains('\0')
+            || report
+                .session
+                .as_ref()
+                .is_some_and(|s| s.provider.contains('\0'))
+        {
+            return None;
+        }
+        Some(report)
     }
 }
 
@@ -355,28 +368,6 @@ pub fn socket_path() -> Option<PathBuf> {
         "soi.sock"
     };
     Some(dir.join(name))
-}
-
-/// Reads one report from a connection: everything up to the end, or a
-/// newline. Gives up on overlong input.
-pub fn read_report(mut stream: impl Read) -> Option<(Uuid, State, String)> {
-    let mut data = Vec::new();
-    let mut buf = [0u8; 4096];
-    loop {
-        let n = stream.read(&mut buf).ok()?;
-        if n == 0 {
-            break;
-        }
-        data.extend_from_slice(&buf[..n]);
-        if data.contains(&b'\n') {
-            break;
-        }
-        if data.len() > MAX_REPORT_BYTES {
-            return None;
-        }
-    }
-    let line = data.split(|&b| b == b'\n').next()?;
-    Report::parse(line)
 }
 
 fn send(socket: &Path, report: &Report) -> io::Result<()> {
@@ -1175,6 +1166,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reports_reject_oversized_json_and_nul_containing_fields() {
+        let mut report = Report {
+            tab: Uuid::new_v4(),
+            state: "input".into(),
+            message: "x".repeat(MAX_REPORT_BYTES),
+            session: None,
+        };
+        assert!(Report::parse(&serde_json::to_vec(&report).unwrap()).is_none());
+        report.message = "\0".into();
+        assert!(Report::parse(&serde_json::to_vec(&report).unwrap()).is_none());
+        report.message.clear();
+        report.session = Some(SessionMetadata {
+            provider: "\0".into(),
+            id: "abc".into(),
+        });
+        assert!(Report::parse(&serde_json::to_vec(&report).unwrap()).is_none());
+    }
+
+    #[test]
     fn session_metadata_is_optional_and_old_reports_still_parse() {
         let tab = Uuid::new_v4();
         let old = format!(r#"{{"tab":"{tab}","state":"working"}}"#);
@@ -1187,7 +1197,15 @@ mod tests {
         assert_eq!(report.session.unwrap().id, "abc-123");
         assert_eq!(
             Report::parse(new.as_bytes()),
-            Some((tab, State::Done, String::new()))
+            Some(Report {
+                tab,
+                state: "done".into(),
+                message: String::new(),
+                session: Some(SessionMetadata {
+                    provider: "claude".into(),
+                    id: "abc-123".into()
+                }),
+            })
         );
     }
 
@@ -1392,11 +1410,10 @@ mod tests {
             session: None,
         };
         send(&path, &report).unwrap();
-        let (stream, _) = listener.accept().unwrap();
-        assert_eq!(
-            read_report(stream),
-            Some((tab, State::Input, "Allow edit?".into()))
-        );
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut bytes = Vec::new();
+        stream.read_to_end(&mut bytes).unwrap();
+        assert_eq!(Report::parse(&bytes), Some(report));
         assert_eq!(Report::parse(br#"{"tab":"nope","state":"done"}"#), None);
         assert_eq!(
             Report::parse(format!(r#"{{"tab":"{tab}","state":"sleeping"}}"#).as_bytes()),

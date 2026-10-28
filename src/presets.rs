@@ -5,10 +5,12 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
@@ -232,13 +234,65 @@ fn major_version_of(program: &str, path: &str) -> Option<u32> {
     let modified = fs::metadata(&binary).and_then(|m| m.modified()).ok()?;
     let mut asked = ASKED.get_or_init(Mutex::default).lock().unwrap();
     *asked.entry((binary.clone(), modified)).or_insert_with(|| {
-        std::process::Command::new(&binary)
-            .arg("--version")
-            .env("PATH", path)
-            .output()
-            .ok()
-            .and_then(|out| major_version(&String::from_utf8_lossy(&out.stdout)))
+        probe_major_version(
+            Command::new(&binary).arg("--version").env("PATH", path),
+            Duration::from_secs(3),
+        )
     })
+}
+
+/// Version detection must not inherit a terminal, allocate unlimited output,
+/// or wait for pipe EOF held by a background descendant of the helper.
+fn probe_major_version(command: &mut Command, timeout: Duration) -> Option<u32> {
+    const LIMIT: usize = 64 * 1024;
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let result = (|| {
+        let mut stdout = child.stdout.take()?;
+        let fd = stdout.as_raw_fd();
+        // SAFETY: stdout owns the live descriptor throughout both calls.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return None;
+        }
+        let started = Instant::now();
+        let mut output = Vec::new();
+        let mut buffer = [0u8; 4096];
+        loop {
+            let status = child.try_wait().ok()?;
+            loop {
+                if started.elapsed() >= timeout {
+                    return None;
+                }
+                match stdout.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if n > LIMIT - output.len() {
+                            return None;
+                        }
+                        output.extend_from_slice(&buffer[..n]);
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(_) => return None,
+                }
+            }
+            if let Some(status) = status {
+                return status
+                    .success()
+                    .then(|| major_version(&String::from_utf8_lossy(&output)))
+                    .flatten();
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    })();
+    let _ = child.kill();
+    let _ = child.wait();
+    result
 }
 
 /// `2` in `opencode v2.0.28` or `2.0.28`.
@@ -296,6 +350,46 @@ pub fn save(presets: &[Preset]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_probe_bounds_output_and_rejects_failed_helpers() {
+        for script in [
+            "printf '2.0.0'; exit 1",
+            "i=0; while [ $i -lt 17000 ]; do printf abcd; i=$((i+1)); done; printf ' 2.0.0'",
+        ] {
+            assert_eq!(
+                probe_major_version(
+                    Command::new("/bin/sh").args(["-c", script]),
+                    Duration::from_secs(2)
+                ),
+                None
+            );
+        }
+        assert_eq!(
+            probe_major_version(
+                Command::new("/bin/sh").args(["-c", "printf 'opencode 2.0.0'"]),
+                Duration::from_secs(2)
+            ),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn version_probe_does_not_wait_for_a_stalled_program() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("soi-version-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let binary = root.join("opencode");
+        fs::write(&binary, "#!/bin/sh\nexec /bin/sleep 4\n").unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(major_version_of("opencode", root.to_str().unwrap()), None);
+        fs::remove_dir_all(root).unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(3500),
+            "unbounded version probe"
+        );
+    }
 
     fn brief() -> Option<String> {
         Some("# Task: x".into())

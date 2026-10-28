@@ -16,6 +16,7 @@ mod screen;
 mod sixel;
 mod widget;
 
+pub(crate) use pty::wait_for_shutdown;
 pub use screen::{Finished, Progress};
 pub use widget::{Input, TermView, default_font};
 
@@ -23,6 +24,8 @@ use screen::Term;
 
 /// The largest APC sequence accepted; images are sent in several anyway.
 const MAX_APC_BYTES: usize = 16 * 1024 * 1024;
+/// Includes room for a base64-encoded 1 MiB OSC 52 clipboard payload.
+const MAX_OSC_BYTES: usize = 2 * 1024 * 1024;
 
 /// Feeds program output to the terminal. The `vte` parser ignores APC
 /// sequences (`ESC _ … ESC \`), which carry Kitty graphics, so those are
@@ -34,6 +37,9 @@ pub struct Feeder {
     apc: Option<Vec<u8>>,
     /// Discard an overlong APC through its terminator; never execute a prefix.
     apc_overflow: bool,
+    /// Bound OSC before handing it to vte, whose std buffer has no limit.
+    osc: Option<Vec<u8>>,
+    osc_overflow: bool,
     /// The previous chunk ended in ESC (inside or outside an APC).
     held_esc: bool,
 }
@@ -44,6 +50,38 @@ impl Feeder {
         let mut i = 0;
         while i < bytes.len() {
             let byte = bytes[i];
+            if let Some(osc) = &mut self.osc {
+                if matches!(byte, 0x07 | 0x18 | 0x1a | 0x1b) {
+                    let data = self.osc.take().unwrap_or_default();
+                    if !self.osc_overflow && !matches!(byte, 0x18 | 0x1a) {
+                        self.parser.advance(term, &data);
+                        // Term ignores the bell/ST distinction. Finish before
+                        // processing ESC normally, including ESC starting APC.
+                        self.parser.advance(term, b"\x07");
+                    } else {
+                        // vte has seen only the introducer, never a partial
+                        // payload: cancelling cannot execute a truncated OSC.
+                        self.parser.advance(term, b"\x18");
+                    }
+                    self.osc_overflow = false;
+                    start = i;
+                    if byte != 0x1b {
+                        i += 1;
+                        start = i;
+                        continue;
+                    }
+                } else {
+                    if !self.osc_overflow && osc.len() < MAX_OSC_BYTES {
+                        osc.push(byte);
+                    } else {
+                        self.osc_overflow = true;
+                        osc.clear();
+                    }
+                    i += 1;
+                    start = i;
+                    continue;
+                }
+            }
             if let Some(apc) = &mut self.apc {
                 if self.held_esc {
                     self.held_esc = false;
@@ -84,10 +122,25 @@ impl Feeder {
                     start = i;
                     continue;
                 }
+                if byte == b']' {
+                    self.parser.advance(term, b"\x1b]");
+                    self.osc = Some(Vec::new());
+                    i += 1;
+                    start = i;
+                    continue;
+                }
                 self.parser.advance(term, &[0x1b]);
             }
             if byte == 0x1b {
                 match bytes.get(i + 1) {
+                    Some(b']') => {
+                        self.parser.advance(term, &bytes[start..i]);
+                        self.parser.advance(term, b"\x1b]");
+                        self.osc = Some(Vec::new());
+                        i += 2;
+                        start = i;
+                        continue;
+                    }
                     Some(b'_') => {
                         self.parser.advance(term, &bytes[start..i]);
                         self.apc = Some(Vec::new());
@@ -107,7 +160,7 @@ impl Feeder {
             }
             i += 1;
         }
-        if self.apc.is_none() && start < bytes.len() {
+        if self.apc.is_none() && self.osc.is_none() && start < bytes.len() {
             self.parser.advance(term, &bytes[start..]);
         }
     }
@@ -116,6 +169,83 @@ impl Feeder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlong_osc_is_discarded_and_normal_output_recovers() {
+        let mut term = Term::new(20, 3, 10);
+        let mut feeder = Feeder::default();
+        feeder.feed(&mut term, b"\x1b]2;");
+        for _ in 0..513 {
+            feeder.feed(&mut term, &[b'x'; 4096]);
+            assert!(feeder.osc.as_ref().unwrap().len() <= MAX_OSC_BYTES);
+        }
+        feeder.feed(&mut term, b"\x07ok");
+        assert!(
+            term.take_title().is_none(),
+            "must discard, not execute an overlong OSC"
+        );
+        assert_eq!(term.line(0).unwrap().text(0, 20), "ok");
+        feeder.feed(&mut term, b"\x1b]2;normal\x1b\\");
+        assert_eq!(term.take_title().as_deref(), Some("normal"));
+    }
+
+    #[test]
+    fn clipboard_output_cannot_pass_embedded_nul_to_gtk() {
+        let mut term = Term::new(20, 3, 10);
+        let mut feeder = Feeder::default();
+        feeder.feed(&mut term, b"\x1b]52;c;AA==\x07");
+        assert!(term.take_copied().is_none());
+    }
+
+    #[test]
+    fn cancelled_osc_also_cancels_an_earlier_incomplete_escape() {
+        let mut term = Term::new(20, 3, 10);
+        let mut feeder = Feeder::default();
+        feeder.feed(&mut term, b"\x1b[31");
+        feeder.feed(&mut term, b"\x1b]2;cancel\x18ok");
+        assert!(term.take_title().is_none());
+        assert_eq!(term.line(0).unwrap().text(0, 20), "ok");
+    }
+
+    #[test]
+    fn osc_limits_preserve_clipboard_and_escape_transitions() {
+        use base64::Engine as _;
+        let mut term = Term::new(20, 3, 10);
+        let mut feeder = Feeder::default();
+        let text = "x".repeat(1024 * 1024);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&text);
+        let input = format!("\x1b]52;c;{encoded}\x1b\\");
+        for chunk in input.as_bytes().chunks(4096) {
+            feeder.feed(&mut term, chunk);
+        }
+        assert_eq!(term.take_copied().unwrap().text, text);
+        for engine in [
+            base64::engine::general_purpose::STANDARD,
+            base64::engine::general_purpose::STANDARD_NO_PAD,
+        ] {
+            let too_large = engine.encode(format!("{text}x"));
+            feeder.feed(&mut term, b"\x1b]52;c;");
+            for chunk in too_large.as_bytes().chunks(4096) {
+                feeder.feed(&mut term, chunk);
+            }
+            feeder.feed(&mut term, b"\x07");
+            assert!(
+                term.take_copied().is_none(),
+                "decoded clipboard size must be bounded regardless of padding"
+            );
+        }
+        for byte in b"\x1b]2;title\x1b_Ga=q,i=1,s=1,v=1,f=24;AAAA\x1b\\ok" {
+            feeder.feed(&mut term, &[*byte]);
+        }
+        assert_eq!(term.take_title().as_deref(), Some("title"));
+        assert_eq!(term.take_responses(), b"\x1b_Gi=1;OK\x1b\\");
+        assert_eq!(term.line(0).unwrap().text(0, 20), "ok");
+        for cancel in [0x18, 0x1a] {
+            feeder.feed(&mut term, b"\x1b]52;c;eA==");
+            feeder.feed(&mut term, &[cancel]);
+            assert!(term.take_copied().is_none(), "cancelled OSC must not copy");
+        }
+    }
 
     #[test]
     fn hostile_sixel_recovers_across_output_chunks() {
