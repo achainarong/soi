@@ -68,7 +68,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build the app bundle
+        # The cache may bring back a partial bundle, which isn't replaced.
         run: |
+          rm -rf target/soi.app
           make bundle
           ditto -c -k --keepParent target/soi.app target/soi-macos-arm64.zip
 

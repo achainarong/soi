@@ -216,12 +216,15 @@ impl Compat {
     }
 }
 
+/// Major versions found, by binary and its modification time.
+type Versions = HashMap<(PathBuf, SystemTime), Option<u32>>;
+
 /// The major version of `program` as installed on `path`, from its
 /// `--version`. Asked once per installed binary, so an update counts without
 /// a restart. Only for tools whose versions differ (see `Compat`): others
 /// aren't run for it.
 fn major_version_of(program: &str, path: &str) -> Option<u32> {
-    static ASKED: OnceLock<Mutex<HashMap<(PathBuf, SystemTime), Option<u32>>>> = OnceLock::new();
+    static ASKED: OnceLock<Mutex<Versions>> = OnceLock::new();
     if program != "opencode" {
         return None;
     }
