@@ -257,6 +257,10 @@ pub(in crate::app) fn settings_form(state: &App) -> gtk::Widget {
     scale.set_value(opacity(&state.shared));
     scale.set_digits(2);
     scale.set_draw_value(true);
+    // Beside the slider, not above it: the row keeps the height of the others.
+    scale.set_value_pos(gtk::PositionType::Right);
+    // Dragging it leaves no focus ring; Tab still reaches it.
+    scale.set_focus_on_click(false);
     let resetting = Rc::new(Cell::new(false));
     let weak = Rc::downgrade(state);
     let guard = resetting.clone();
@@ -266,6 +270,7 @@ pub(in crate::app) fn settings_form(state: &App) -> gtk::Widget {
         }
     });
     let reset_opacity = gtk::Button::with_label("Reset");
+    reset_opacity.set_valign(gtk::Align::Center);
     let weak = Rc::downgrade(state);
     let scale_ref = scale.downgrade();
     reset_opacity.connect_clicked(move |_| {
@@ -296,8 +301,11 @@ pub(in crate::app) fn settings_form(state: &App) -> gtk::Widget {
     );
     ui_scale.set_value(current.ui_scale());
     ui_scale.set_draw_value(true);
+    ui_scale.set_value_pos(gtk::PositionType::Right);
+    ui_scale.set_focus_on_click(false);
     ui_scale.set_format_value_func(|_, value| format!("{:.0}%", value * 100.0));
-    ui_scale.add_mark(1.0, gtk::PositionType::Bottom, None);
+    // No mark at 100%: with one, themes draw the knob as a pointer, unlike
+    // the opacity slider's. Reset goes back there.
     let weak = Rc::downgrade(state);
     ui_scale.connect_value_changed(move |scale| {
         if let Some(state) = weak.upgrade() {
@@ -305,6 +313,7 @@ pub(in crate::app) fn settings_form(state: &App) -> gtk::Widget {
         }
     });
     let reset_scale = gtk::Button::with_label("Reset");
+    reset_scale.set_valign(gtk::Align::Center);
     let scale_ref = ui_scale.downgrade();
     reset_scale.connect_clicked(move |_| {
         // Moving the slider saves the new value.
