@@ -28,6 +28,7 @@ struct View {
     checklist: gtk::Box,
     new_item: gtk::Entry,
     files: gtk::TextView,
+    requests: Rc<requests::Picker>,
     tabs: gtk::Stack,
     message: gtk::Label,
     agent_message: gtk::Label,
@@ -225,6 +226,15 @@ pub(super) fn open(state: &App) {
         60,
     );
     files.set_monospace(true);
+    details.append(
+        &gtk::Label::builder()
+            .label("Skills and commands for the agent")
+            .xalign(0.0)
+            .build(),
+    );
+    let requests =
+        requests::Picker::new(&ws.root_dir, &initial.skills, &initial.commands, true, None);
+    details.append(&requests.widget);
     tabs.add_titled(
         &gtk::ScrolledWindow::builder()
             .child(&details)
@@ -445,6 +455,7 @@ pub(super) fn open(state: &App) {
         checklist,
         new_item: new_item.clone(),
         files,
+        requests,
         tabs: tabs.clone(),
         message,
         agent_message,
@@ -740,6 +751,8 @@ fn form(view: &View) -> Result<TaskContext, String> {
         .lines()
         .filter_map(|p| optional_path(p, &view.ws.root_dir))
         .collect();
+    task.skills = view.requests.skills();
+    task.commands = view.requests.commands();
     task.plan = view.plan.path.borrow().clone();
     Ok(task)
 }

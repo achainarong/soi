@@ -30,6 +30,7 @@ pub(super) fn rebuild_sidebar(state: &App) {
                     name,
                     collapsed,
                     workspaces,
+                    ..
                 } => {
                     state.list.append(&group_row(state, *id, name, *collapsed));
                     if !collapsed {
@@ -323,6 +324,31 @@ pub(super) fn sidebar_menu(state: &App, item: Option<Item>) -> gio::Menu {
                 Some("Open folder in group…"),
                 Some(&action("group-open-folder", &id)),
             );
+            specific.append(
+                Some("New task worktree in group…"),
+                Some(&action("group-new-task", &id)),
+            );
+            let chosen = group_collection(state, Uuid::parse_str(&id).unwrap_or_default());
+            let collection_menu = gio::Menu::new();
+            let mark = |name: Option<&str>| {
+                if chosen.as_deref() == name {
+                    "✓ "
+                } else {
+                    ""
+                }
+            };
+            collection_menu.append(
+                Some(&format!("{}The default collection", mark(None))),
+                Some(&action("group-collection", &format!("{id}|"))),
+            );
+            for collection in crate::collections::load() {
+                let name = &collection.name;
+                collection_menu.append(
+                    Some(&format!("{}{name}", mark(Some(name)))),
+                    Some(&action("group-collection", &format!("{id}|{name}"))),
+                );
+            }
+            specific.append_submenu(Some("Collection for new tasks"), &collection_menu);
             specific.append(Some("Ungroup"), Some(&action("group-ungroup", &id)));
             specific.append(
                 Some("Close group and its workspaces"),

@@ -27,6 +27,7 @@ mod panel;
 mod panes;
 mod persist;
 mod preview;
+mod requests;
 mod settings_window;
 mod sidebar;
 mod switcher;
@@ -213,6 +214,8 @@ enum Node {
         id: Uuid,
         name: String,
         collapsed: bool,
+        /// See `crate::session::Group::collection`.
+        collection: Option<String>,
         workspaces: Vec<Uuid>,
     },
 }

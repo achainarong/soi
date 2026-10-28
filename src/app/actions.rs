@@ -99,6 +99,18 @@ pub(super) fn install_actions(state: &App) {
             new_terminal_workspace(s, Some(id))
         }
     });
+    add("group-new-task", |s, p| {
+        if let Ok(id) = Uuid::parse_str(p) {
+            tasks::create(s, Some(id))
+        }
+    });
+    add("group-collection", |s, p| {
+        if let Some((id, name)) = p.split_once('|')
+            && let Ok(id) = Uuid::parse_str(id)
+        {
+            set_group_collection(s, id, Some(name.to_string()).filter(|n| !n.is_empty()))
+        }
+    });
     add("group-open-folder", |s, p| {
         if let Ok(id) = Uuid::parse_str(p) {
             pick_project(s, Some(id))

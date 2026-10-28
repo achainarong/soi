@@ -2,6 +2,26 @@
 
 use super::*;
 
+/// The collection a group's new tasks start with.
+pub(in crate::app) fn group_collection(state: &App, group: Uuid) -> Option<String> {
+    state.tree.borrow().iter().find_map(|node| match node {
+        Node::Group { id, collection, .. } if *id == group => collection.clone(),
+        _ => None,
+    })
+}
+
+/// Sets it; `None` leaves it to the default collection.
+pub(in crate::app) fn set_group_collection(state: &App, group: Uuid, name: Option<String>) {
+    for node in state.tree.borrow_mut().iter_mut() {
+        if let Node::Group { id, collection, .. } = node
+            && *id == group
+        {
+            *collection = name.clone();
+        }
+    }
+    save_all(&state.shared);
+}
+
 /// The sidebar's groups in order, each with its workspaces. The ungrouped
 /// workspaces count as one group (`None`), where the first of them is.
 pub(in crate::app) fn groups(state: &App) -> Vec<(Option<Uuid>, Vec<Uuid>)> {
@@ -66,6 +86,7 @@ pub(in crate::app) fn new_group(state: &App, workspaces: Vec<Uuid>, at: Option<u
                 id,
                 name: "New group".into(),
                 collapsed: false,
+                collection: None,
                 workspaces,
             },
         );

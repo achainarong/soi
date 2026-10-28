@@ -20,7 +20,7 @@ pub(super) fn background<T: Send + 'static>(
 
 pub(super) fn connect(state: &App) {
     for (name, handler) in [
-        ("task-new", create as fn(&App)),
+        ("task-new", (|state| create(state, None)) as fn(&App)),
         ("task-context", task_view::open),
         ("task-history", history),
         ("task-archive", archived),
@@ -331,11 +331,33 @@ pub(super) fn optional_path(text: &str, root: &Path) -> Option<PathBuf> {
     })
 }
 
-fn create(state: &App) {
-    let root = current_pane(state)
-        .and_then(|pane| state.panes.borrow().get(&pane).map(|p| pane_cwd(p)))
+/// The New task worktree dialog. The task goes into `group`, or beside the
+/// active workspace without one; that group's collection is chosen to
+/// begin with, or the default collection.
+pub(super) fn create(state: &App, group: Option<Uuid>) {
+    // A group's task is likely for the project its workspaces are in.
+    let group_root = group.and_then(|group| {
+        let tree = state.tree.borrow();
+        let first = tree.iter().find_map(|node| match node {
+            Node::Group { id, workspaces, .. } if *id == group => workspaces.first().copied(),
+            _ => None,
+        })?;
+        Some(state.workspaces.borrow().get(&first)?.root_dir.clone())
+    });
+    let root = group_root
+        .or_else(|| {
+            current_pane(state)
+                .and_then(|pane| state.panes.borrow().get(&pane).map(|p| pane_cwd(p)))
+        })
         .or_else(|| active_workspace(state).map(|ws| ws.root_dir.clone()))
         .unwrap_or_else(home_dir);
+    let in_group = group.or_else(|| {
+        let active = state.active.get()?;
+        group_of(&state.tree.borrow(), active)
+    });
+    let chosen = in_group
+        .and_then(|group| group_collection(state, group))
+        .or_else(|| crate::collections::default_name(&crate::collections::load()));
     let (dialog, content, save, cancel) = dialog(state, "New task worktree", "Create");
     let title = field(&content, "Task name", "");
     let ticket = field(
@@ -391,6 +413,18 @@ fn create(state: &App) {
         gtk::CheckButton::with_label("Give the agent the task brief as its first prompt");
     with_brief.set_sensitive(false);
     content.append(&with_brief);
+    let requests = requests::Picker::new(&root, &[], &[], true, chosen.as_deref());
+    content.append(&requests.widget);
+    // Project skills and commands come with the repository chosen.
+    let weak_requests = Rc::downgrade(&requests);
+    repository.connect_changed(move |entry| {
+        let path = PathBuf::from(entry.text().trim());
+        if let Some(requests) = weak_requests.upgrade()
+            && path.is_dir()
+        {
+            requests.set_repository(&path);
+        }
+    });
     let (weak_brief, weak_model, choices) =
         (with_brief.downgrade(), model.downgrade(), presets.clone());
     agent.connect_selected_notify(move |agent| {
@@ -432,6 +466,7 @@ fn create(state: &App) {
         };
         let description = buffer_text(&description).trim_end().to_string();
         let checklist = crate::tasks::parse_checklist(&buffer_text(&checklist));
+        let (skills, commands, collection) = (requests.skills(), requests.commands(), requests.collection());
         let (plan_mode, plan) = (plan_mode.selected(), plan.text().to_string());
         if plan_mode == 1 && plan.trim().is_empty() { error.set_label("Enter the existing plan's path."); return; }
         let preset = (agent.selected() as usize).checked_sub(1).and_then(|i| presets.get(i))
@@ -456,6 +491,8 @@ fn create(state: &App) {
             task.ticket = ticket;
             task.description = description;
             task.checklist = checklist;
+            task.skills = skills;
+            task.commands = commands;
             // Worktrees of one repository share its folder of tasks.
             let main = crate::git::main_repository(&root).unwrap_or(root);
             let folder = task.task_folder(&crate::tasks::project_folder(&main));
@@ -479,6 +516,14 @@ fn create(state: &App) {
             };
             let command = preset.as_ref().map(|p| agent_command(p, with_brief.then(|| task.brief(&destination)), &task, &agent_path));
             let mut events = vec![format!("Created on branch {branch}, worktree {}", destination.display())];
+            if !task.skills.is_empty() || !task.commands.is_empty() {
+                let from = collection.map(|name| format!(" (from collection {name})")).unwrap_or_default();
+                events.push(format!(
+                    "Requested skills: {}; commands: {}{from}",
+                    crate::tasks::skill_list(&task.skills),
+                    crate::tasks::command_list(&task.commands)
+                ));
+            }
             if let Some(preset) = &preset {
                 events.push(started(preset, with_brief));
             }
@@ -494,7 +539,7 @@ fn create(state: &App) {
                     if let Some(state) = weak.upgrade() {
                         let mut ws = Workspace::new(directory.clone());
                         ws.name = task.title.clone(); ws.task = Some(Box::new(task));
-                        insert_workspace(&state, ws, None);
+                        insert_workspace(&state, ws, group);
                         if let (Some(command), Some(pane)) = (command, current_pane(&state))
                             && let Err(error) = launch(&state, &pane, &directory, command) {
                                 gtk::AlertDialog::builder().message("Worktree created, but agent could not start")

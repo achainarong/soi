@@ -42,6 +42,7 @@ checks![
     agents_to_start_can_be_added_edited_and_removed,
     agents_started_directly_show_in_the_agents_panel,
     agents_started_through_a_wrapper_count_as_the_agent,
+    skills_commands_and_collections_are_picked_by_clicking,
 ];
 
 // Run actual GTK window/session lifecycles in a child with its own home
@@ -1853,6 +1854,91 @@ fn agents_started_through_a_wrapper_count_as_the_agent() {
             });
             window.close_confirmed.set(true);
             window.window.close();
+        },
+    );
+}
+
+/// The toggle labelled `label` inside `root`.
+fn toggle(root: &gtk::Widget, label: &str) -> Option<gtk::ToggleButton> {
+    if let Some(toggle) = root.downcast_ref::<gtk::ToggleButton>()
+        && toggle.label().as_deref() == Some(label)
+    {
+        return Some(toggle.clone());
+    }
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Some(found) = toggle(&widget, label) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
+fn skills_commands_and_collections_are_picked_by_clicking() {
+    isolated(
+        "skills_commands_and_collections_are_picked_by_clicking",
+        || {
+            let _ = application();
+            let home = crate::session::home_dir();
+            for (path, text) in [
+                (
+                    ".agents/skills/tdd/SKILL.md",
+                    "---\nname: tdd\ndescription: Test first\n---\n",
+                ),
+                (".agents/skills/grill/SKILL.md", "---\nname: grill\n---\n"),
+                (".claude/commands/review.md", "Review the diff\n"),
+            ] {
+                fs::create_dir_all(home.join(path).parent().unwrap()).unwrap();
+                fs::write(home.join(path), text).unwrap();
+            }
+            let nothing = super::requests::Picker::new(&home, &[], &[], true, None);
+            assert!(nothing.skills().is_empty() && nothing.collection().is_none());
+
+            // A collection made in the settings, by clicking.
+            let section = super::requests::collections_section();
+            let add = {
+                fn button(root: &gtk::Widget) -> Option<gtk::Button> {
+                    if let Some(b) = root.downcast_ref::<gtk::Button>()
+                        && b.label().as_deref() == Some("Add collection")
+                    {
+                        return Some(b.clone());
+                    }
+                    let mut child = root.first_child();
+                    while let Some(widget) = child {
+                        if let Some(found) = button(&widget) {
+                            return Some(found);
+                        }
+                        child = widget.next_sibling();
+                    }
+                    None
+                }
+                button(&section).unwrap()
+            };
+            add.emit_clicked();
+            toggle(&section, "tdd").unwrap().set_active(true);
+            toggle(&section, "/review").unwrap().set_active(true);
+            let mut list = crate::collections::load();
+            assert_eq!(list[0].skills, ["tdd"]);
+            assert_eq!(list[0].commands, ["review"]);
+            assert!(!list[0].default);
+            crate::collections::set_default(&mut list, Some(0));
+            crate::collections::save(&list).unwrap();
+
+            // The default is chosen for a new task, toggles and all.
+            let default = crate::collections::default_name(&crate::collections::load());
+            let picker = super::requests::Picker::new(&home, &[], &[], true, default.as_deref());
+            assert_eq!(picker.collection().as_deref(), Some("New collection"));
+            assert_eq!(picker.skills(), ["tdd"]);
+            assert_eq!(picker.commands(), ["review"]);
+            toggle(&picker.widget.clone().upcast(), "grill")
+                .unwrap()
+                .set_active(true);
+            assert_eq!(picker.skills(), ["grill", "tdd"]);
+            // Task details keep what the task has, not the default.
+            let saved = super::requests::Picker::new(&home, &["gone".into()], &[], true, None);
+            assert_eq!(saved.skills(), ["gone"]);
+            assert!(saved.commands().is_empty());
         },
     );
 }

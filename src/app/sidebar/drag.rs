@@ -288,6 +288,7 @@ mod tests {
                 id: id(10),
                 name: "g".into(),
                 collapsed: false,
+                collection: None,
                 workspaces: vec![id(4), id(5)],
             },
         ]

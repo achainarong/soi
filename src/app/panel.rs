@@ -1343,6 +1343,16 @@ pub(super) fn settings_page(state: &App) -> gtk::Widget {
     page.append(&presets_section());
 
     page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    page.append(&text("Skill and command collections", &["soi-section"]));
+    page.append(&text(
+        "Skills and commands to request together. New task worktree and Task details \
+         offer them; the default one is chosen for every new task. Lists your own \
+         skills and commands; a repository's show up when you create its task.",
+        &["dim-label", "caption"],
+    ));
+    page.append(&super::requests::collections_section());
+
+    page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     page.append(&text("Exact states", &["soi-section"]));
     page.append(&text(
         "Without help, soi sees whether an agent is busy or quiet. With these, \

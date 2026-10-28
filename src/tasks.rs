@@ -51,6 +51,13 @@ pub struct TaskContext {
     pub acceptance: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub checklist: Vec<ChecklistItem>,
+    /// Skills the user asked the agent to use, by name (see `crate::skills`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<String>,
+    /// Commands (slash commands, prompts) the user asked the agent to run,
+    /// by name without the `/`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<String>,
     /// The ticket's number, e.g. `PROJ-123`; it names the task's folder.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ticket: Option<String>,
@@ -62,6 +69,21 @@ pub struct TaskContext {
     /// the worktree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<PathBuf>,
+}
+
+/// `a, b`, or `none`.
+pub fn skill_list(skills: &[String]) -> String {
+    if skills.is_empty() {
+        "none".into()
+    } else {
+        skills.join(", ")
+    }
+}
+
+/// `/a, /b`, or `none`.
+pub fn command_list(commands: &[String]) -> String {
+    let commands: Vec<String> = commands.iter().map(|c| format!("/{c}")).collect();
+    skill_list(&commands)
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -200,6 +222,8 @@ impl TaskContext {
             description: String::new(),
             acceptance: String::new(),
             checklist: Vec::new(),
+            skills: Vec::new(),
+            commands: Vec::new(),
             ticket: None,
             created: now(),
             folder: None,
@@ -311,6 +335,20 @@ impl TaskContext {
                 self.checklist.len()
             ));
         }
+        if self.skills != old.skills {
+            changes.push(format!(
+                "Skills: {} → {}",
+                skill_list(&old.skills),
+                skill_list(&self.skills)
+            ));
+        }
+        if self.commands != old.commands {
+            changes.push(format!(
+                "Commands: {} → {}",
+                command_list(&old.commands),
+                command_list(&self.commands)
+            ));
+        }
         if self.important_files != old.important_files {
             changes.push("Important files edited".into());
         }
@@ -365,6 +403,12 @@ impl TaskContext {
 ",
                 plan.display()
             ));
+        }
+        if !self.skills.is_empty() {
+            out.push_str(&format!("- Skills: {}\n", skill_list(&self.skills)));
+        }
+        if !self.commands.is_empty() {
+            out.push_str(&format!("- Commands: {}\n", command_list(&self.commands)));
         }
         if self.created > 0 {
             out.push_str(&format!(
@@ -469,6 +513,36 @@ impl TaskContext {
                 "## Plan\n\nRead and keep the plan up to date: {}\n\n",
                 plan.display()
             ));
+        }
+        use crate::skills::Kind;
+        for (kind, names, heading, prefix) in [
+            (
+                Kind::Skill,
+                &self.skills,
+                "## Skills\n\nUse these skills for this task:",
+                "",
+            ),
+            (
+                Kind::Command,
+                &self.commands,
+                "## Commands\n\nRun these commands for this task (or follow their files if you can't):",
+                "/",
+            ),
+        ] {
+            if names.is_empty() {
+                continue;
+            }
+            out.push_str(&format!("{heading}\n\n"));
+            let available = crate::skills::discover(kind, worktree);
+            for name in names {
+                match available.iter().find(|item| &item.name == name) {
+                    Some(item) => {
+                        out.push_str(&format!("- {prefix}{name} ({})\n", item.path.display()))
+                    }
+                    None => out.push_str(&format!("- {prefix}{name}\n")),
+                }
+            }
+            out.push('\n');
         }
         if !self.important_files.is_empty() {
             out.push_str("## Important files\n\n");
@@ -742,6 +816,34 @@ mod tests {
         assert_eq!(lines.len(), 2, "{history}");
         assert!(lines[0].ends_with(" — Created"));
         assert!(lines[1].ends_with(" — Status: Active → Ready for review"));
+    }
+
+    #[test]
+    fn skills_show_in_metadata_history_and_brief() {
+        let mut task = TaskContext::new("Login".into(), "/src/soi".into());
+        assert!(!task.metadata(None, &[], 0).contains("Skills"));
+        let old = task.clone();
+        task.skills = vec!["tdd".into(), "nowhere-to-be-found".into()];
+        task.commands = vec!["review".into()];
+        assert_eq!(
+            task.changes_since(&old),
+            [
+                "Skills: none → tdd, nowhere-to-be-found",
+                "Commands: none → /review"
+            ]
+        );
+        assert!(
+            task.metadata(None, &[], 0)
+                .contains("- Commands: /review\n")
+        );
+        assert!(
+            task.metadata(None, &[], 0)
+                .contains("- Skills: tdd, nowhere-to-be-found\n")
+        );
+        let brief = task.brief(Path::new("/src/soi"));
+        assert!(brief.contains("## Skills\n\nUse these skills for this task:\n\n"));
+        assert!(brief.contains("- nowhere-to-be-found\n"));
+        assert!(brief.contains("## Commands\n"));
     }
 
     #[test]

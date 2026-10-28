@@ -19,6 +19,7 @@ pub(super) fn restore(state: &App, session: Option<&WindowSession>, fill: bool) 
                     id: group.id,
                     name: group.name.clone(),
                     collapsed: group.collapsed,
+                    collection: group.collection.clone(),
                     workspaces: group.workspaces.iter().map(|ws| ws.id).collect(),
                 });
             }
@@ -114,11 +115,13 @@ pub(super) fn snapshot(state: &App) -> WindowSession {
                 id,
                 name,
                 collapsed,
+                collection,
                 workspaces,
             } => Some(Entry::Group(Group {
                 id: *id,
                 name: name.clone(),
                 collapsed: *collapsed,
+                collection: collection.clone(),
                 workspaces: workspaces.iter().filter_map(&workspace).collect(),
             })),
         })

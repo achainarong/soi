@@ -1,5 +1,6 @@
 mod agents;
 mod app;
+mod collections;
 mod dirs;
 mod git;
 mod keybindings;
@@ -11,6 +12,7 @@ mod presets;
 mod session;
 mod settings;
 mod shell_integration;
+mod skills;
 mod tasks;
 mod term;
 mod theme;

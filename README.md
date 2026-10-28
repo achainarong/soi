@@ -331,6 +331,25 @@ cached separately per configured shell; restart Soi after changing shell PATH
 configuration. Normal zsh startup scripts run during discovery, so interactive
 setup that requires a real terminal should be guarded appropriately.
 
+### Skill and command collections
+
+**Settings ▸ Agents ▸ Skill and command collections** keeps sets of skills
+and commands you request together, say `tdd` and `/review` for backend work.
+Add a collection, name it, and click the skills and commands it chooses.
+Tick **Default for new tasks** on one to have New task worktree choose it
+every time; at most one is the default, and you can still pick another
+collection, none, or change the toggles for that task. Only your own skills
+and commands are listed there; a repository's show up in the task dialogs.
+They are kept in `~/.config/soi/collections.json`. soi comes with none:
+collections are yours to make.
+
+A **group** can have its own: right-click its name, **Collection for new
+tasks**, and pick one (or **The default collection** again). A new task
+worktree in that group, from the group's **New task worktree in group…** or
+while one of its workspaces is active, starts with the group's collection
+instead of the default, say one for a C++ project and another for Terraform.
+Groups keep it with the layout.
+
 ## Task workflows
 
 Open **Tasks** in the sidebar toolbar:
@@ -355,7 +374,18 @@ Open **Tasks** in the sidebar toolbar:
   it. An existing file is linked, never overwritten. Optionally start one of
   your agents (see [Agents to start](#agents-to-start)) in a new tab, change
   its model for this start, and tick **Give the agent the task brief** to
-  pass the brief as its first prompt.
+  pass the brief as its first prompt. Click the **skills** and **commands**
+  you want the agent to use (several if you like; hover one for its
+  description), or choose a **collection** of them (see
+  [Skill and command collections](#skill-and-command-collections)); the
+  group's collection, or else the default collection, is chosen to begin
+  with. soi lists skills in
+  `~/.claude/skills`, `~/.agents/skills`, `~/.codex/skills`, OpenCode's and
+  Pi's skill folders, and commands in `~/.claude/commands` (a subfolder
+  makes `folder:name`), `~/.codex/prompts`, OpenCode's commands and Pi's
+  prompts; also those of installed Claude Code plugins (as `plugin:name`)
+  and the repository's own (`.claude/skills`, `.agents/skills`,
+  `.claude/commands`, …). The brief names them, with where each file is.
   The tools must already be installed and configured. Uncommitted changes are
   not copied to the worktree.
 - **Task folders** keep each task's plan and history on your machine, outside
@@ -368,9 +398,11 @@ Open **Tasks** in the sidebar toolbar:
   is the ticket number, or a short id without one (the same ticket and task
   name find the same folder again, whose plan is linked, never overwritten).
   `metadata.md` starts with what the task is now (id, ticket, issue, status,
-  repository, branch, plan, when it was created), which soi rewrites, and a
-  **History** that it only adds to: created, renamed, status, ticket, issue,
-  branch and plan changes, checklist items ticked, edits, agents started, and
+  repository, branch, plan, requested skills and commands, when it was
+  created), which soi rewrites, and a **History** that it only adds to:
+  created (with the skills and commands requested, and the collection they
+  came from), renamed, status, ticket, issue, branch, plan, skills and
+  commands changes, checklist items ticked, edits, agents started, and
   the worktree removed. Removing a worktree or its branch never touches the
   folder. The brief tells agents where the history and the project's earlier
   tasks are, and agents soi starts may read and edit the project's folder
@@ -385,7 +417,9 @@ Open **Tasks** in the sidebar toolbar:
   (**Alt+1**–**Alt+4**):
   - **Details**: name, status (Active, Blocked, Ready for review, Finished), ticket number,
     issue link (a reference only; nothing is imported or fetched),
-    description, acceptance criteria, a checklist and important files.
+    description, acceptance criteria, a checklist, important files and the
+    skills and commands to request (choosing a collection replaces them with
+    its own).
     Relative paths resolve inside the workspace. Agent activity never changes
     task status. Every agent in the workspace inherits its task; the agents
     panel filters activity and task status independently.
@@ -398,7 +432,7 @@ Open **Tasks** in the sidebar toolbar:
     or keep yours. Saving is atomic and refuses to replace a version you
     haven't seen. Unlinking never deletes the file.
   - **Agents**: linking a plan does **not** send it anywhere. **Copy brief**
-    puts a Markdown brief (task, ticket, checklist and plan path) on the
+    puts a Markdown brief (task, ticket, checklist, skills, commands and plan path) on the
     clipboard to paste into any agent. Pick one of your agents (and change
     its model for this start if you like) and **Start with brief** to open a
     new tab running it with the brief as its first prompt.
@@ -504,6 +538,8 @@ for its own settings. `$XDG_CONFIG_HOME` and `$XDG_STATE_HOME` override the defa
 | `~/.config/soi/config` | The active profile |
 | `~/.config/soi/profiles/<name>.conf` | A profile's settings |
 | `~/.config/soi/keybindings.conf` | Changed shortcuts |
+| `~/.config/soi/agent-presets.json` | Agents to start |
+| `~/.config/soi/collections.json` | Skill and command collections |
 
 Shells started by soi have `TERM_PROGRAM=soi` set, so shell configs can
 tell (e.g. to pick a fastfetch logo type).

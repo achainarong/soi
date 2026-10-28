@@ -103,6 +103,10 @@ pub struct Group {
     pub name: String,
     #[serde(default)]
     pub collapsed: bool,
+    /// The collection of skills and commands its new tasks start with (see
+    /// `crate::collections`), by name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection: Option<String>,
     pub workspaces: Vec<Workspace>,
 }
 
@@ -492,6 +496,7 @@ mod tests {
                 id: Uuid::new_v4(),
                 name: "Project".into(),
                 collapsed: true,
+                collection: Some("C++".into()),
                 workspaces: vec![workspace],
             })],
             ..Default::default()
