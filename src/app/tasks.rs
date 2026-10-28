@@ -392,11 +392,7 @@ pub(super) fn create(state: &App, group: Option<Uuid>) {
     content.append(&advanced);
     let issue = field(&more, "Issue link (optional reference)", "");
     let checklist = text_area(&more, "Checklist (optional; one item per line)", 60);
-    let base = field(
-        &more,
-        "Base branch (optional; a branch, tag or commit)",
-        "",
-    );
+    let base = field(&more, "Base branch (optional; a branch, tag or commit)", "");
     base.set_placeholder_text(Some("What the repository has checked out when left empty"));
     let destination = field(
         &more,
@@ -605,26 +601,25 @@ pub(super) fn launch(
             crate::agents::display_name(program)
         ));
     }
-    let index = add_command_tab(
-        state,
-        pane,
-        directory,
-        None,
-        Some(command.argv),
-        &command.env,
-    )
-    .ok_or("Cannot open an agent tab. Check that the workspace directory still exists.")?;
+    if let Some((workspace, ws)) = workspace_of(state, pane)
+        && let Some(main) = main_tab_of(&ws, pane)
+    {
+        select_main_tab_id(state, workspace, main.id);
+    }
+    let pane = new_command_main_tab(state, directory, command.argv, &command.env)
+        .ok_or("Cannot open an agent tab. Check that the workspace directory still exists.")?;
+    let index = 0;
     // Started through a wrapper, the tab runs the agent, not the wrapper.
     if let Some(agent) = &command.agent
         && let Some(tab) = state
             .panes
             .borrow()
-            .get(pane)
+            .get(&pane)
             .and_then(|pane| pane.tabs.borrow().get(index).cloned())
     {
         tab.terminal.set_program(agent);
     }
-    activate_tab(state, pane, index, true);
+    activate_tab(state, &pane, index, true);
     save_all(&state.shared);
     Ok(())
 }

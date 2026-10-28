@@ -4,13 +4,8 @@ use super::*;
 
 /// Opens a tab in `cwd` (default: the current tab's directory) and shows it.
 pub(in crate::app) fn new_tab(state: &App, pane: &gtk::Box, cwd: Option<PathBuf>) {
-    let cwd = cwd.or_else(|| {
-        let panes = state.panes.borrow();
-        panes.get(pane)?.current().map(|tab| tab_cwd(&tab))
-    });
-    if let Some(index) = add_tab(state, pane, &cwd.unwrap_or_else(home_dir), None) {
-        activate_tab(state, pane, index, true);
-    }
+    let cwd = cwd.or_else(|| state.panes.borrow().get(pane).map(|pane| pane_cwd(pane)));
+    new_main_tab(state, cwd);
 }
 
 /// Adds a tab with a shell in `cwd` at the end; returns its index. A tab
@@ -35,6 +30,9 @@ pub(in crate::app) fn add_command_tab(
     extra_env: &[(String, String)],
 ) -> Option<usize> {
     let info = state.panes.borrow().get(pane).cloned()?;
+    if !info.tabs.borrow().is_empty() {
+        return None; // One terminal per pane; new terminals belong in main tabs or splits.
+    }
     let cwd = if cwd.is_dir() {
         cwd.to_path_buf()
     } else if command.is_some() {
@@ -141,38 +139,6 @@ pub(in crate::app) fn add_command_tab(
             }
         }
     };
-    let show = for_tab(|state, pane, tab| {
-        if let Some(index) = tab_index(state, pane, tab) {
-            activate_tab(state, pane, index, true);
-        }
-    });
-    let click = gtk::GestureClick::new();
-    click.connect_pressed(move |_, _, _, _| show());
-    button.add_controller(click);
-    // Dragged onto a pane, the tab moves there (see `install_tab_drop`).
-    let drag = gtk::DragSource::builder()
-        .actions(gdk::DragAction::MOVE)
-        .content(&gdk::ContentProvider::for_value(
-            &format!("{TAB_DRAG}{id}").to_value(),
-        ))
-        .build();
-    let shared = Rc::downgrade(&state.shared);
-    drag.connect_drag_begin(move |source, _| {
-        if let Some(shared) = shared.upgrade() {
-            shared.tab_drop.replace(TabDrop::default());
-        }
-        if let Some(button) = source.widget() {
-            source.set_icon(Some(&gtk::WidgetPaintable::new(Some(&button))), 0, 0);
-        }
-    });
-    let shared = Rc::downgrade(&state.shared);
-    drag.connect_drag_end(move |_, _, _| {
-        if let Some(shared) = shared.upgrade() {
-            shared.tab_drop.borrow_mut().ended = true;
-            finish_tab_drop(&shared);
-        }
-    });
-    button.add_controller(drag);
     let close_this = for_tab(request_close_tab);
     close.connect_clicked(move |_| close_this());
     let exited = for_tab(close_tab);
@@ -204,6 +170,7 @@ pub(in crate::app) fn add_command_tab(
     // Shells set several titles in a row while starting up (or restoring);
     // showing only the last keeps the tab from flickering.
     let tab_ref = Rc::downgrade(&tab);
+    let shared = Rc::downgrade(&state.shared);
     let pending: Rc<RefCell<Option<String>>> = Rc::default();
     terminal.connect_title_changed(move |title| {
         if title.is_empty() {
@@ -213,13 +180,23 @@ pub(in crate::app) fn add_command_tab(
         if scheduled {
             return;
         }
-        let (tab_ref, pending) = (tab_ref.clone(), pending.clone());
+        let (tab_ref, pending, shared) = (tab_ref.clone(), pending.clone(), shared.clone());
         glib::timeout_add_local_once(TITLE_SETTLE, move || {
             if let Some(title) = pending.take()
                 && let Some(tab) = tab_ref.upgrade()
                 && tab.title.text() != title
             {
                 tab.title.set_text(&title);
+                if let Some(shared) = shared.upgrade()
+                    && let Some(state) = window_of(&shared, tab.terminal.widget())
+                    && let Some((_, ws)) = workspace_of(&state, tab.terminal.widget())
+                    && let Some(main) = main_tab_of(&ws, tab.terminal.widget())
+                    && main.last_focus.upgrade().as_ref()
+                        == pane_of(&state, tab.terminal.widget()).as_ref()
+                {
+                    main.name.replace(title);
+                    refresh_main_tabs(&ws);
+                }
             }
         });
     });
@@ -232,28 +209,6 @@ pub(in crate::app) fn add_command_tab(
 const TITLE_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
 /// The narrowest a tab's title gets, so tabs don't resize with short titles.
 const TITLE_MIN_CHARS: i32 = 16;
-
-/// Moves tab `from` of a pane to just before the tab now at `to` (counted
-/// with the moved tab still in place).
-pub(in crate::app) fn reorder_tab(state: &App, pane: &gtk::Box, from: usize, to: usize) {
-    let Some(info) = state.panes.borrow().get(pane).cloned() else {
-        return;
-    };
-    let to = if to > from { to - 1 } else { to };
-    let tab = {
-        let mut tabs = info.tabs.borrow_mut();
-        let to = to.min(tabs.len() - 1);
-        let tab = tabs.remove(from);
-        tabs.insert(to, tab.clone());
-        tab
-    };
-    let index = tab_index(state, pane, &tab).unwrap_or(0);
-    let before = index
-        .checked_sub(1)
-        .map(|i| info.tabs.borrow()[i].button.clone());
-    info.strip.reorder_child_after(&tab.button, before.as_ref());
-    activate_tab(state, pane, index, true);
-}
 
 pub(in crate::app) fn tab_index(state: &App, pane: &gtk::Box, tab: &Rc<Tab>) -> Option<usize> {
     let panes = state.panes.borrow();
@@ -282,6 +237,11 @@ pub(in crate::app) fn activate_tab(state: &App, pane: &gtk::Box, index: usize, f
     if let Some(tab) = tab {
         info.stack.set_visible_child(tab.terminal.widget());
         if focus {
+            if let Some((workspace, ws)) = workspace_of(state, pane)
+                && let Some(main) = main_tab_of(&ws, pane)
+            {
+                select_main_tab_id(state, workspace, main.id);
+            }
             tab.terminal.widget().grab_focus();
         }
     }
@@ -340,21 +300,6 @@ pub(in crate::app) fn request_close_tab(state: &App, pane: &gtk::Box, tab: &Rc<T
     });
 }
 
-/// Shows the next (`delta` 1) or previous (-1) tab of the focused pane.
-pub(in crate::app) fn cycle_tab(state: &App, delta: isize) {
-    let Some(pane) = current_pane(state) else {
-        return;
-    };
-    let Some(info) = state.panes.borrow().get(&pane).cloned() else {
-        return;
-    };
-    let count = info.tabs.borrow().len() as isize;
-    if count > 1 {
-        let next = (info.active.get() as isize + delta).rem_euclid(count);
-        activate_tab(state, &pane, next as usize, true);
-    }
-}
-
 /// Keeps what's needed to reopen a tab being closed: its folder, and its
 /// output, saved like that of open tabs so it survives a restart.
 pub(in crate::app) fn remember_closed(state: &App, tab: &Tab) {
@@ -389,11 +334,27 @@ pub(in crate::app) fn reopen_tab(state: &App) {
     state.shared.session_dirty.set(true);
     match closed {
         Closed::Tab { id, cwd } => {
-            let Some(pane) = current_pane(state) else {
-                return;
-            };
-            if let Some(index) = add_tab(state, &pane, &cwd, Some(id)) {
-                activate_tab(state, &pane, index, true);
+            if let Some(workspace) = state.active.get() {
+                let saved = crate::session::WorkspaceTab {
+                    id: Uuid::new_v4(),
+                    name: "Terminal".into(),
+                    focused_pane: 0,
+                    layout: Layout::Pane {
+                        cwd,
+                        tabs: Vec::new(),
+                        active: 0,
+                        ids: vec![id],
+                        zoomed: false,
+                    },
+                };
+                add_main_tab(state, workspace, &saved);
+                select_main_tab_id(state, workspace, saved.id);
+            }
+        }
+        Closed::MainTab(tab) => {
+            if let Some(workspace) = state.active.get() {
+                add_main_tab(state, workspace, &tab);
+                select_main_tab_id(state, workspace, tab.id);
             }
         }
         Closed::Workspace(ws) => reopen_workspace(state, ws),

@@ -15,11 +15,20 @@ your workspaces and panes branch off the sidebar.
   Double-click a workspace or group name to rename it inline; Enter saves,
   Escape cancels. Group arrows expand and collapse their workspaces; a
   group's + opens a new terminal in it.
-- **Split panes** (side by side or stacked) and **tabs** in every pane.
-  **Drag a tab** onto a pane to rearrange: near an edge it becomes a new
-  pane on that side, in the middle it joins that pane's tabs, and on a
-  pane's tab strip it goes in among the tabs right there (also to reorder
-  tabs); its program keeps running.
+- **One main tab bar per workspace**. Each tab owns its own **split panes**
+  (side by side or stacked), with one terminal per pane. Switching tabs
+  restores that tab's layout and focused pane; hidden terminals keep running.
+  Select tabs by number, cycle panes in stable layout order, or focus a pane
+  directly with directional shortcuts.
+- **Drag and drop**: drag a main tab to reorder it or move it to another
+  workspace's tab bar (including another window). Drop it at a pane's edge
+  to move its whole layout into that split. Drag a pane by its header to
+  rearrange splits, or drop it on a main tab bar to make it a tab. Drop on a
+  sidebar workspace row to move there as a main tab; hover over a workspace
+  or main tab while dragging to reveal its panes. Center drops move the item
+  to the destination workspace's main tab bar, never into nested pane tabs.
+  Running terminals and output stay intact; edge highlights and insertion
+  markers show where the item will land.
 - **Several windows**, each with its own sidebar, named and switchable from
   the sidebar. The window switcher (the name above the sidebar) lists open
   windows and **closed windows**: click one to go there or reopen it, and
@@ -182,13 +191,16 @@ Cmd instead, with these common bindings:
 | macOS keys | Action |
 |------------|--------|
 | `Cmd+T` / `Cmd+W` / `Cmd+Shift+T` | New / close / reopen tab or workspace |
-| `Cmd+Shift+]` / `Cmd+Shift+[` | Next / previous tab |
+| `Cmd+1` … `Cmd+9` | Select main tab 1–9, left to right |
+| `Cmd+Shift+]` / `Cmd+Shift+[` | Next / previous main tab |
+| `Cmd+Option+]` / `Cmd+Option+[` | Next / previous split pane |
+| `Cmd+Shift+W` | Close the focused split pane |
 | `Cmd+D` / `Cmd+Shift+D` | Split right / down |
 | `Cmd+Option+Arrows` | Focus a pane |
 | `Cmd+Shift+Option+Arrows` | Move the divider |
 | `Cmd+Shift+Enter` / `Cmd+Shift+B` | Zoom pane / broadcast input |
-| `Cmd+Shift+A` / `Cmd+1` … `Cmd+9` | New workspace / workspace in current group |
-| `Cmd+Ctrl+Down` / `Cmd+Ctrl+Up` | Next / previous workspace |
+| `Cmd+Shift+A` / `Cmd+Option+1` … `Cmd+Option+9` | New workspace / workspace in current group |
+| `Cmd+Ctrl+Down` / `Cmd+Ctrl+Up` | Next / previous workspace within the current group |
 | `Cmd+Ctrl+Shift+Down` / `Cmd+Ctrl+Shift+Up` | Next / previous group |
 | `Cmd+P` / `Cmd+N` | Quick switcher / new window |
 | `Cmd+Enter` | Window fills the screen (not fullscreen), and back |
@@ -211,15 +223,18 @@ first and can't move soi's windows; add soi to its ignored apps (Rectangle:
 |------|--------|
 | `Ctrl+Shift+T` / `Ctrl+Shift+W` | New tab / close tab |
 | `Ctrl+Shift+Z` | Reopen the tab or workspace closed last, with its folders and output (also after a restart) |
-| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab |
+| `Alt+1` … `Alt+9` | Select main tab 1–9, left to right |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous main tab |
+| `Ctrl+Shift+]` / `Ctrl+Shift+[` | Next / previous split pane |
+| `Ctrl+Alt+W` | Close the focused split pane |
 | `Ctrl+Shift+E` / `Ctrl+Shift+O` | Split right / split down |
 | `Ctrl+Shift+Arrows` | Focus the pane in that direction |
 | `Ctrl+Shift+Alt+Arrows` | Move the divider next to the pane that way |
 | `Ctrl+Shift+Enter` | Zoom the pane to fill the workspace, and back |
-| `Ctrl+Shift+B` | Type into all panes of the workspace at once (their borders turn red), and back |
+| `Ctrl+Shift+B` | Type into all panes of the current main tab at once (their borders turn red), and back |
 | `Ctrl+Shift+A` | New workspace |
-| `Alt+1` … `Alt+9` | Go to workspace 1–9 of the current group (ungrouped workspaces count as one group) |
-| `Ctrl+PgUp/PgDn` | Previous / next workspace |
+| `Ctrl+Alt+1` … `Ctrl+Alt+9` | Go to workspace 1–9 of the current group (ungrouped workspaces count as one group) |
+| `Ctrl+PgUp/PgDn` | Previous / next workspace within the current group |
 | `Ctrl+Shift+PgUp/PgDn` | Previous / next group, back to the workspace you were on there |
 | `F2` | Rename workspace |
 | `Ctrl+Shift+P` | Quick switcher: type to go to any workspace or agent |
@@ -235,6 +250,18 @@ first and can't move soi's windows; add soi to its ignored apps (Rectangle:
 | `Ctrl+Shift+I` | Open the current task's details |
 | `Ctrl+Shift+M` | Show / hide the plan beside the terminal |
 | `Ctrl+,` | Settings |
+
+Workspace, main-tab and pane cycling wrap at either end. Pane order follows
+left before right and top before bottom through the split layout. Numbered
+selection is exact: a missing number does nothing; tabs beyond nine remain
+reachable by cycling or clicking. Closing a main tab closes its entire split
+layout (with confirmation when programs are running); closing the last pane
+closes that tab. Closing the final tab leaves a fresh terminal in the workspace.
+Zoom and broadcast input apply only to the selected main tab. Tasks and plans
+remain attached to the workspace.
+
+**Session format change:** workspace-level tabs start a new session format;
+old pane-tab sessions are not migrated. Settings and custom shortcuts remain.
 
 In the terminal: double-click selects a word, triple-click a line,
 Ctrl+click opens a link, Shift+PgUp/PgDn scrolls.
@@ -553,7 +580,8 @@ tell (e.g. to pick a fastfetch logo type).
   - `window.rs`: windows and the saved windows of the window switcher
   - `persist.rs`: saving and restoring layouts and output
   - `actions.rs`: actions and their shortcuts
-  - `panes/`: splits, tabs and dragging tabs between panes
+  - `panes/`: terminal panes, splitting and focus
+  - `workspace_tabs.rs`: the main tab bar, per-tab layouts and pane cycling
   - `workspaces/`: workspaces and their groups
   - `sidebar/`: the sidebar's rows, menu, renaming and drag and drop
   - `settings_window/`: applying settings, and the Settings window

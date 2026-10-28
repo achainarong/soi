@@ -104,6 +104,11 @@ pub(in crate::app) fn install_drop_target(state: &App) {
     let target = gtk::DropTarget::new(glib::Type::STRING, gdk::DragAction::MOVE);
     target.set_preload(true);
     let weak = Rc::downgrade(state);
+    target.connect_accept(move |_, _| {
+        weak.upgrade()
+            .is_some_and(|state| state.shared.layout_drag.borrow().active.is_none())
+    });
+    let weak = Rc::downgrade(state);
     target.connect_motion(move |target, _, y| {
         let item = target
             .value()

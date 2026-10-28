@@ -9,9 +9,25 @@ pub(super) use archive::*;
 pub(super) use groups::*;
 
 pub(super) fn add_workspace_ui(state: &App, ws: &Workspace) {
-    let layout = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    layout.set_hexpand(true);
-    layout.append(&build_layout(state, &ws.layout));
+    let tab_stack = gtk::Stack::builder().hexpand(true).vexpand(true).build();
+    let tab_strip = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+    tab_strip.add_css_class("pane-tabs");
+    let new = header_button(
+        &["list-add-symbolic"],
+        &shortcut_hint(&state.shared, "New main tab", "new-tab"),
+    );
+    let header = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    let scroll = gtk::ScrolledWindow::builder()
+        .child(&tab_strip)
+        .hexpand(true)
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .vscrollbar_policy(gtk::PolicyType::Never)
+        .build();
+    header.append(&scroll);
+    header.append(&new);
+    let layout = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    layout.append(&header);
+    layout.append(&tab_stack);
     // A window resize goes to the terminals; the plan keeps its width.
     let plan_split = gtk::Paned::builder()
         .orientation(gtk::Orientation::Horizontal)
@@ -32,21 +48,41 @@ pub(super) fn add_workspace_ui(state: &App, ws: &Workspace) {
             task: RefCell::new(ws.task.as_deref().cloned()),
             holder,
             plan_split,
-            layout,
+            tab_strip,
+            tab_stack,
+            tabs: RefCell::new(Vec::new()),
+            active_tab: Cell::new(0),
             plan_width: Cell::new(preview::PLAN_WIDTH),
-            last_focus: glib::WeakRef::new(),
-            zoomed: glib::WeakRef::new(),
-            broadcast: Cell::new(false),
             plan_panel: RefCell::new(None),
         }),
     );
-    let zoomed = workspace_panes(state, ws.id)
-        .into_iter()
-        .find(|pane| pane.has_css_class("zoom-when-shown"));
-    if let Some(pane) = zoomed {
-        pane.remove_css_class("zoom-when-shown");
-        zoom_pane(state, &pane);
+    layout_drag::install_tab_strip_drop(state, ws.id);
+    for tab in &ws.tabs {
+        add_main_tab(state, ws.id, tab);
     }
+    let ui = state.workspaces.borrow()[&ws.id].clone();
+    if ui.tabs.borrow().is_empty() {
+        let tab = crate::session::WorkspaceTab {
+            id: Uuid::new_v4(),
+            name: "Terminal".into(),
+            layout: Layout::pane(ws.root_dir.clone()),
+            focused_pane: 0,
+        };
+        add_main_tab(state, ws.id, &tab);
+    }
+    ui.active_tab
+        .set(ws.active_tab.min(ui.tabs.borrow().len() - 1));
+    ui.tab_stack.set_visible_child(&ui.current_tab().layout);
+    refresh_main_tabs(&ui);
+    let (shared, holder, id) = (Rc::downgrade(&state.shared), ui.holder.downgrade(), ws.id);
+    new.connect_clicked(move |_| {
+        if let (Some(shared), Some(holder)) = (shared.upgrade(), holder.upgrade())
+            && let Some(state) = window_of(&shared, &holder)
+        {
+            select_workspace(&state, id);
+            new_main_tab(&state, None);
+        }
+    });
 }
 
 /// Makes sure there is at least one workspace to show.
@@ -124,10 +160,23 @@ pub(super) fn show_workspace(state: &App, id: Uuid) {
     if let Some(pane) = current_pane(state) {
         focus_pane(state, &pane);
     }
+    let tab = ws.current_tab();
+    if let Some(pane) = tab_panes(&tab)
+        .into_iter()
+        .find(|pane| pane.has_css_class("zoom-when-shown"))
+    {
+        pane.remove_css_class("zoom-when-shown");
+        zoom_pane(state, &pane);
+    }
 }
 
 pub(super) fn cycle_workspace(state: &App, delta: isize) {
-    let order = workspace_order(state);
+    let active = state.active.get();
+    let order = groups(state)
+        .into_iter()
+        .find(|(_, members)| active.is_some_and(|id| members.contains(&id)))
+        .map(|(_, members)| members)
+        .unwrap_or_default();
     if order.is_empty() {
         return;
     }
@@ -236,8 +285,10 @@ pub(super) fn move_to_window(from: &App, id: Uuid, target: Option<usize>) {
         return;
     };
     from.stack.remove(&ws.holder);
-    if let Some(root) = ws.layout.first_child() {
-        hand_over(from, &to, &root);
+    for tab in ws.tabs.borrow().iter() {
+        if let Some(root) = tab.layout.first_child() {
+            hand_over(from, &to, &root);
+        }
     }
     to.stack.add_named(&ws.holder, Some(&id.to_string()));
     to.workspaces.borrow_mut().insert(id, ws);
@@ -344,8 +395,10 @@ pub(super) fn discard_workspace(state: &App, id: Uuid) {
     let Some(ws) = state.workspaces.borrow_mut().remove(&id) else {
         return;
     };
-    if let Some(root) = ws.layout.first_child() {
-        forget_tree(state, &root);
+    for tab in ws.tabs.borrow().iter() {
+        if let Some(root) = tab.layout.first_child() {
+            forget_tree(state, &root);
+        }
     }
     state.stack.remove(&ws.holder);
     ensure_workspace(state);

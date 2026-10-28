@@ -89,16 +89,18 @@ pub(super) fn save_output(shared: &Shared, windows: &[App]) {
 /// A workspace as it's saved: its layout, tabs and folders.
 pub(super) fn workspace_snapshot(state: &App, id: Uuid) -> Option<Workspace> {
     let ui = state.workspaces.borrow().get(&id)?.clone();
-    let layout = ui
-        .layout
-        .first_child()
-        .and_then(|root| snapshot_layout(state, &root))
-        .unwrap_or_else(|| Layout::pane(ui.root_dir.clone()));
+    let tabs = ui
+        .tabs
+        .borrow()
+        .iter()
+        .map(|tab| main_tab_snapshot(state, tab))
+        .collect();
     Some(Workspace {
         id,
         name: ui.name.borrow().clone(),
         root_dir: ui.root_dir.clone(),
-        layout,
+        tabs,
+        active_tab: ui.active_tab.get(),
         task: ui.task.borrow().clone().map(Box::new),
     })
 }

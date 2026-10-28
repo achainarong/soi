@@ -23,8 +23,11 @@ checks![
     restart_restores_open_windows_and_retains_closed_contexts,
     numbers_count_within_the_group_and_groups_switch,
     windows_maximize_and_zoom_is_kept,
-    tabs_move_between_panes_by_drag_and_drop,
-    dropped_tabs_move_only_once_the_drag_is_over,
+    main_tabs_keep_independent_splits_and_focus,
+    pane_cycling_wraps_within_the_selected_main_tab,
+    main_tab_drag_reorders_and_combines_live_layouts,
+    pane_drag_moves_between_tabs_and_windows_without_restarting,
+    layout_drop_waits_for_drag_end_and_cancellation_does_nothing,
     quick_switcher_goes_to_the_workspace_typed,
     terminal_output_comes_back_after_a_restart,
     context_tracks_shell_directory_changes,
@@ -185,6 +188,10 @@ fn mapped_label(widget: &gtk::Widget, text: &str) -> Option<gtk::Label> {
 }
 
 fn double_click(widget: &impl IsA<gtk::Widget>) {
+    let widget = widget
+        .ancestor(gtk::ListBoxRow::static_type())
+        .unwrap_or_else(|| widget.clone().upcast());
+    wait_until(|| widget.is_mapped() && widget.width() > 0 && widget.height() > 0);
     let controllers = widget.observe_controllers();
     let gesture = (0..controllers.n_items())
         .filter_map(|i| controllers.item(i))
@@ -572,7 +579,8 @@ fn context_live_updates_groups_splits_tabs_and_directories() {
             fs::create_dir(&project).unwrap();
             let pane = current_pane(&window).unwrap();
             new_tab(&window, &pane, Some(project));
-            split_pane(&window, &pane, gtk::Orientation::Horizontal);
+            let selected = current_pane(&window).unwrap();
+            split_pane(&window, &selected, gtk::Orientation::Horizontal);
             let workspace = window.active.get().unwrap();
             let at = detach(&mut window.tree.borrow_mut(), workspace);
             new_group(&window, vec![workspace], at);
@@ -582,15 +590,14 @@ fn context_live_updates_groups_splits_tabs_and_directories() {
             let Entry::Group(group) = &saved.sidebar[0] else {
                 panic!("group not saved")
             };
-            let Layout::Split { start, end, .. } = &group.workspaces[0].layout else {
+            assert_eq!(group.workspaces[0].tabs.len(), 2);
+            let Layout::Split { start, end, .. } = &group.workspaces[0].tabs[1].layout else {
                 panic!("split not saved")
             };
-            let Layout::Pane { tabs, active, .. } = &**start else {
+            let Layout::Pane { cwd, .. } = &**start else {
                 panic!("pane not saved")
             };
-            assert_eq!(tabs.len(), 2);
-            assert_eq!(*active, 1);
-            assert_eq!(tabs[1], home_dir().join("project"));
+            assert_eq!(*cwd, home_dir().join("project"));
             assert!(matches!(**end, Layout::Pane { .. }));
             window.window.close();
         },
@@ -672,8 +679,20 @@ fn numbers_count_within_the_group_and_groups_switch() {
         assert_eq!(go("workspace-1"), b, "first of the group");
         assert_eq!(go("workspace-2"), c);
         assert_eq!(go("workspace-3"), c, "no third in the group");
+        assert_eq!(go("next-workspace"), b, "wrap inside this group");
+        assert_eq!(
+            go("previous-workspace"),
+            c,
+            "wrap backward inside this group"
+        );
         select_workspace(&window, a);
         assert_eq!(go("workspace-2"), d, "second ungrouped");
+        assert_eq!(
+            go("next-workspace"),
+            a,
+            "ungrouped workspaces cycle together"
+        );
+        assert_eq!(go("previous-workspace"), d);
 
         // Groups come back to where you were in them.
         assert_eq!(go("next-group"), c);
@@ -741,179 +760,313 @@ fn windows_maximize_and_zoom_is_kept() {
     });
 }
 
-fn tabs_move_between_panes_by_drag_and_drop() {
-    isolated("tabs_move_between_panes_by_drag_and_drop", || {
+fn main_tabs_keep_independent_splits_and_focus() {
+    isolated("main_tabs_keep_independent_splits_and_focus", || {
         let (_app, shared) = application();
         let window = new_window(&shared, None, true);
         let first = current_pane(&window).unwrap();
-        new_tab(&window, &first, None);
-        let tabs = |pane: &gtk::Box| window.panes.borrow()[pane].tabs.borrow().clone();
-        let ws = window.active.get().unwrap();
-        let root = || {
-            window.workspaces.borrow()[&ws]
-                .layout
-                .first_child()
-                .unwrap()
-        };
-        let moved = tabs(&first)[1].clone();
-        let terminal = moved.terminal.widget().clone();
-
-        // To the right edge: a split, with the tab as the new pane.
-        move_tab(&window, &moved, &first, DropZone::Right);
-        let paned = root().downcast::<gtk::Paned>().expect("a split");
-        assert_eq!(paned.orientation(), gtk::Orientation::Horizontal);
-        assert_eq!(paned.start_child().as_ref(), Some(first.upcast_ref()));
-        let second = paned.end_child().unwrap().downcast::<gtk::Box>().unwrap();
-        assert!(Rc::ptr_eq(&tabs(&second)[0], &moved));
-        assert_eq!(tabs(&first).len(), 1);
-        assert_eq!(moved.terminal.widget(), &terminal, "the same terminal");
-
-        // Into the middle of the first pane: the empty one closes.
-        move_tab(&window, &moved, &first, DropZone::Center);
-        assert!(root().is::<gtk::Box>(), "no split left");
-        assert_eq!(tabs(&first).len(), 2);
-        assert!(!window.panes.borrow().contains_key(&second));
-
-        // A pane's only tab moves the whole pane: here above the other.
         split_pane(&window, &first, gtk::Orientation::Horizontal);
-        let paned = root().downcast::<gtk::Paned>().unwrap();
-        let other = paned.end_child().unwrap().downcast::<gtk::Box>().unwrap();
-        let only = tabs(&other)[0].clone();
-        move_tab(&window, &only, &first, DropZone::Top);
-        let paned = root().downcast::<gtk::Paned>().unwrap();
-        assert_eq!(paned.orientation(), gtk::Orientation::Vertical);
-        assert_eq!(paned.end_child().as_ref(), Some(first.upcast_ref()));
-        let top = paned.start_child().unwrap().downcast::<gtk::Box>().unwrap();
-        assert!(Rc::ptr_eq(&tabs(&top)[0], &only));
-        // Dropped onto its own pane, a lone tab stays.
-        move_tab(&window, &only, &top, DropZone::Left);
-        assert_eq!(root(), paned.upcast::<gtk::Widget>());
-        // The new layout is what gets saved.
-        let saved = snapshot(&window);
-        let Entry::Workspace(saved) = &saved.sidebar[0] else {
-            panic!("workspace not saved")
-        };
-        assert!(matches!(
-            saved.layout,
-            Layout::Split {
-                orientation: session::Orientation::Vertical,
-                ..
-            }
-        ));
-
-        // A popped-out pane goes back among the tabs where it's dropped
-        // on the tab strip: here first.
-        move_tab(&window, &only, &first, DropZone::Tabs(0));
-        assert!(root().is::<gtk::Box>(), "its pane closed");
-        assert!(Rc::ptr_eq(&tabs(&first)[0], &only));
-        assert_eq!(tabs(&first).len(), 3);
-        let strip_order: Vec<gtk::Widget> = {
-            let strip = window.panes.borrow()[&first].strip.clone();
-            let mut out = Vec::new();
-            let mut child = strip.first_child();
-            while let Some(widget) = child {
-                child = widget.next_sibling();
-                out.push(widget);
-            }
-            out
-        };
-        let buttons: Vec<gtk::Widget> = tabs(&first)
-            .iter()
-            .map(|t| t.button.clone().upcast())
-            .collect();
-        assert_eq!(strip_order, buttons, "the header shows the same order");
-        // On its own strip, a tab changes place: the first goes last.
-        move_tab(&window, &only, &first, DropZone::Tabs(3));
-        assert!(Rc::ptr_eq(&tabs(&first)[2], &only));
-        move_tab(&window, &only, &first, DropZone::Tabs(0));
-        assert!(Rc::ptr_eq(&tabs(&first)[0], &only));
-        // A point on the header means the strip, below it the terminal.
-        wait_until(|| first.height() > 100);
-        let header = first.first_child().unwrap().height() as f64;
-        let width = first.width() as f64;
-        assert!(matches!(
-            drop_zone(&window, &first, width - 5.0, header / 2.0),
-            DropZone::Tabs(3)
-        ));
-        assert_eq!(
-            drop_zone(&window, &first, width / 2.0, header + 5.0),
-            DropZone::Top
-        );
-        assert_eq!(
-            drop_zone(&window, &first, width / 2.0, first.height() as f64 / 2.0),
-            DropZone::Center
-        );
-
-        // A moved tab's buttons act on the pane it is in now.
-        moved.close.emit_clicked();
-        assert!(!tabs(&first).iter().any(|tab| Rc::ptr_eq(tab, &moved)));
+        let focused = current_pane(&window).unwrap();
+        run_action(&window, "new-tab");
+        let second_tab_pane = current_pane(&window).unwrap();
+        let ws = active_workspace(&window).unwrap();
+        assert_eq!(ws.tabs.borrow().len(), 2);
+        assert_eq!(tab_panes(&ws.current_tab()).len(), 1);
+        run_action(&window, "tab-1");
+        assert_eq!(current_pane(&window), Some(focused));
+        assert_eq!(tab_panes(&ws.current_tab()).len(), 2);
+        run_action(&window, "tab-2");
+        assert_eq!(current_pane(&window), Some(second_tab_pane));
+        run_action(&window, "next-tab");
+        assert_eq!(ws.active_tab.get(), 0);
+        run_action(&window, "previous-tab");
+        assert_eq!(ws.active_tab.get(), 1);
+        let saved = workspace_snapshot(&window, window.active.get().unwrap()).unwrap();
+        assert_eq!(saved.tabs.len(), 2);
+        assert_eq!(saved.active_tab, 1);
+        assert!(matches!(saved.tabs[0].layout, Layout::Split { .. }));
+        assert!(matches!(saved.tabs[1].layout, Layout::Pane { .. }));
         window.window.close();
     });
 }
 
-fn dropped_tabs_move_only_once_the_drag_is_over() {
-    isolated("dropped_tabs_move_only_once_the_drag_is_over", || {
+fn main_tab_drag_reorders_and_combines_live_layouts() {
+    isolated("main_tab_drag_reorders_and_combines_live_layouts", || {
+        use layout_drag::{DragItem, DropPlace, Edge, move_layout};
         let (_app, shared) = application();
         let window = new_window(&shared, None, true);
-        let pane = current_pane(&window).unwrap();
-        new_tab(&window, &pane, None);
-        let tabs = |pane: &gtk::Box| window.panes.borrow()[pane].tabs.borrow().clone();
-        let ws = window.active.get().unwrap();
-        let split = || {
-            window.workspaces.borrow()[&ws]
-                .layout
-                .first_child()
+        let ws = active_workspace(&window).unwrap();
+        let workspace = window.active.get().unwrap();
+        let first = current_pane(&window).unwrap();
+        split_pane(&window, &first, gtk::Orientation::Horizontal);
+        let first_tab = ws.current_tab().id;
+        let original = ws.current_tab().layout.first_child().unwrap();
+        let moved_terminal = window.panes.borrow()[&first].current().unwrap();
+        new_main_tab(&window, None);
+        let second = current_pane(&window).unwrap();
+        split_pane(&window, &second, gtk::Orientation::Vertical);
+        let second_tab = ws.current_tab().id;
+        move_layout(
+            &shared,
+            DragItem::MainTab(first_tab),
+            &window,
+            DropPlace::Tabs {
+                workspace,
+                before: None,
+            },
+        );
+        assert_eq!(
+            ws.tabs
+                .borrow()
+                .iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>(),
+            [second_tab, first_tab]
+        );
+        assert_eq!(
+            ws.current_tab().layout.first_child(),
+            Some(original.clone())
+        );
+        move_layout(
+            &shared,
+            DragItem::MainTab(first_tab),
+            &window,
+            DropPlace::Pane {
+                pane: second.downgrade(),
+                edge: Edge::Right,
+            },
+        );
+        assert_eq!(ws.tabs.borrow().len(), 1);
+        assert_eq!(ws.current_tab().id, second_tab);
+        assert_eq!(tab_panes(&ws.current_tab()).len(), 4);
+        assert!(first.is_ancestor(&ws.current_tab().layout));
+        assert!(Rc::ptr_eq(
+            &window.panes.borrow()[&first].current().unwrap(),
+            &moved_terminal
+        ));
+        assert_eq!(
+            original
+                .parent()
                 .unwrap()
-                .is::<gtk::Paned>()
-        };
-        let settle = || {
-            let mut n = 0;
-            wait_until(|| {
-                n += 1;
-                n > 20
-            });
-        };
-        let tab = tabs(&pane)[1].clone();
-        let drop = |zone| {
-            shared.tab_drop.borrow_mut().target = Some((tab.id, pane.downgrade(), zone));
-            finish_tab_drop(&shared);
-        };
-        let end = || {
-            shared.tab_drop.borrow_mut().ended = true;
-            finish_tab_drop(&shared);
-        };
+                .downcast::<gtk::Paned>()
+                .unwrap()
+                .orientation(),
+            gtk::Orientation::Horizontal
+        );
+        // A whole layout cannot be dropped into one of its own descendants.
+        let before = snapshot(&window);
+        move_layout(
+            &shared,
+            DragItem::MainTab(second_tab),
+            &window,
+            DropPlace::Pane {
+                pane: first.downgrade(),
+                edge: Edge::Left,
+            },
+        );
+        assert_eq!(snapshot(&window), before);
+        let saved = workspace_snapshot(&window, workspace).unwrap();
+        assert_eq!(saved.tabs.len(), 1);
+        assert!(matches!(saved.tabs[0].layout, Layout::Split { .. }));
+        window.window.close();
+    });
+}
 
-        // Dropped, but GTK still drags the tab: it stays for now.
-        shared.tab_drop.replace(TabDrop::default());
-        drop(DropZone::Right);
-        settle();
-        assert!(!split(), "not while the drag is still going");
-        end();
-        wait_until(split);
+fn pane_drag_moves_between_tabs_and_windows_without_restarting() {
+    isolated(
+        "pane_drag_moves_between_tabs_and_windows_without_restarting",
+        || {
+            use layout_drag::{DragItem, DropPlace, Edge, move_layout};
+            let (_app, shared) = application();
+            let from = new_window(&shared, None, true);
+            let first = current_pane(&from).unwrap();
+            split_pane(&from, &first, gtk::Orientation::Horizontal);
+            let remaining = current_pane(&from).unwrap();
+            let terminal = from.panes.borrow()[&first].current().unwrap();
+            terminal.terminal.restore("drag-keeps-this-output\r\n");
+            let ws = active_workspace(&from).unwrap();
+            let original_tab = ws.current_tab().id;
+            new_main_tab(&from, None);
+            let target = current_pane(&from).unwrap();
+            move_layout(
+                &shared,
+                DragItem::Pane(terminal.id),
+                &from,
+                DropPlace::Pane {
+                    pane: target.downgrade(),
+                    edge: Edge::Left,
+                },
+            );
+            assert_eq!(tab_panes(&ws.tabs.borrow()[0]), [remaining]);
+            assert_eq!(tab_panes(&ws.current_tab()).len(), 2);
+            let workspace = from.active.get().unwrap();
+            move_layout(
+                &shared,
+                DragItem::Pane(terminal.id),
+                &from,
+                DropPlace::Tabs {
+                    workspace,
+                    before: Some(original_tab),
+                },
+            );
+            assert_eq!(ws.tabs.borrow().len(), 3);
+            assert_eq!(ws.active_tab.get(), 0);
+            assert_eq!(
+                tab_panes(&ws.current_tab()).as_slice(),
+                std::slice::from_ref(&first)
+            );
+            let moved_tab = ws.current_tab().id;
+            new_terminal_workspace(&from, None);
+            let other_workspace = from.active.get().unwrap();
+            move_layout(
+                &shared,
+                DragItem::MainTab(moved_tab),
+                &from,
+                DropPlace::Tabs {
+                    workspace: other_workspace,
+                    before: None,
+                },
+            );
+            assert_eq!(ws.tabs.borrow().len(), 2);
+            assert_eq!(active_workspace(&from).unwrap().current_tab().id, moved_tab);
+            assert_eq!(current_pane(&from), Some(first.clone()));
+            let to = new_window(&shared, None, true);
+            let destination = to.active.get().unwrap();
+            let before = active_workspace(&to).unwrap().current_tab().id;
+            move_layout(
+                &shared,
+                DragItem::MainTab(moved_tab),
+                &to,
+                DropPlace::Tabs {
+                    workspace: destination,
+                    before: Some(before),
+                },
+            );
+            assert!(!from.panes.borrow().contains_key(&first));
+            assert!(Rc::ptr_eq(
+                &to.panes.borrow()[&first].current().unwrap(),
+                &terminal
+            ));
+            assert_eq!(current_pane(&to), Some(first.clone()));
+            assert!(
+                terminal
+                    .terminal
+                    .export(20)
+                    .contains("drag-keeps-this-output")
+            );
+            // Main-tab buttons must act on their new workspace/window after moving.
+            run_action(&to, "next-tab");
+            let button = active_workspace(&to).unwrap().tabs.borrow()[0]
+                .button
+                .clone();
+            let gestures = button.observe_controllers();
+            let click = (0..gestures.n_items())
+                .filter_map(|i| gestures.item(i))
+                .find_map(|controller| controller.downcast::<gtk::GestureClick>().ok())
+                .unwrap();
+            click.emit_by_name::<()>("released", &[&1i32, &0.0f64, &0.0f64]);
+            assert_eq!(current_pane(&to), Some(first.clone()));
+            // A pane dragged out of a workspace's only tab leaves a usable fresh shell.
+            let third = new_window(&shared, None, true);
+            let sole = current_pane(&third).unwrap();
+            let sole_terminal = third.panes.borrow()[&sole].current().unwrap();
+            move_layout(
+                &shared,
+                DragItem::Pane(sole_terminal.id),
+                &to,
+                DropPlace::Pane {
+                    pane: first.downgrade(),
+                    edge: Edge::Bottom,
+                },
+            );
+            assert!(!third.panes.borrow().contains_key(&sole));
+            assert!(current_pane(&third).is_some());
+            assert!(to.panes.borrow().contains_key(&sole));
+            assert_eq!(active_workspace(&third).unwrap().tabs.borrow().len(), 1);
+            third.window.close();
+            to.window.close();
+            from.window.close();
+        },
+    );
+}
 
-        // The other order works too, and a drag without a drop does nothing.
-        let paned = window.workspaces.borrow()[&ws]
-            .layout
-            .first_child()
-            .unwrap();
-        let right = paned
-            .downcast::<gtk::Paned>()
-            .unwrap()
-            .end_child()
-            .unwrap()
-            .downcast::<gtk::Box>()
-            .unwrap();
-        let moved = tabs(&right)[0].clone();
-        assert!(Rc::ptr_eq(&moved, &tab));
-        shared.tab_drop.replace(TabDrop::default());
-        end();
-        settle();
-        assert!(split(), "a cancelled drag moves nothing");
-        shared.tab_drop.replace(TabDrop::default());
-        end();
-        drop(DropZone::Center);
-        wait_until(|| !split());
-        assert_eq!(tabs(&pane).len(), 2);
+fn layout_drop_waits_for_drag_end_and_cancellation_does_nothing() {
+    isolated(
+        "layout_drop_waits_for_drag_end_and_cancellation_does_nothing",
+        || {
+            use layout_drag::{DragItem, DropPlace, LayoutDrag, finish_layout_drop};
+            let (_app, shared) = application();
+            let window = new_window(&shared, None, true);
+            let workspace = window.active.get().unwrap();
+            let ws = active_workspace(&window).unwrap();
+            let first = ws.current_tab().id;
+            new_main_tab(&window, None);
+            let second = ws.current_tab().id;
+            shared.layout_drag.borrow_mut().pending = Some((
+                DragItem::MainTab(first),
+                window.id.get(),
+                DropPlace::Tabs {
+                    workspace,
+                    before: None,
+                },
+            ));
+            finish_layout_drop(&shared);
+            assert_eq!(ws.tabs.borrow()[0].id, first, "not before drag-end");
+            shared.layout_drag.borrow_mut().ended = true;
+            finish_layout_drop(&shared);
+            wait_until(|| ws.tabs.borrow()[0].id == second);
+            assert_eq!(ws.tabs.borrow().len(), 2);
+            assert!(shared.layout_drag.borrow().pending.is_none());
+            // Cancelling a subsequent drag leaves both layouts alone.
+            shared.layout_drag.replace(LayoutDrag::default());
+            shared.layout_drag.borrow_mut().ended = true;
+            finish_layout_drop(&shared);
+            assert_eq!(
+                ws.tabs
+                    .borrow()
+                    .iter()
+                    .map(|tab| tab.id)
+                    .collect::<Vec<_>>(),
+                [second, first]
+            );
+            // Sources and targets are actually installed, not just movement helpers.
+            let button = ws.current_tab().button.clone();
+            assert!(
+                (0..button.observe_controllers().n_items())
+                    .filter_map(|i| button.observe_controllers().item(i))
+                    .any(|controller| controller.is::<gtk::DragSource>())
+            );
+            assert!(
+                (0..ws.tab_strip.observe_controllers().n_items())
+                    .filter_map(|i| ws.tab_strip.observe_controllers().item(i))
+                    .any(|controller| controller.is::<gtk::DropTarget>())
+            );
+            window.window.close();
+        },
+    );
+}
+
+fn pane_cycling_wraps_within_the_selected_main_tab() {
+    isolated("pane_cycling_wraps_within_the_selected_main_tab", || {
+        let (_app, shared) = application();
+        let window = new_window(&shared, None, true);
+        let first = current_pane(&window).unwrap();
+        split_pane(&window, &first, gtk::Orientation::Horizontal);
+        let second = current_pane(&window).unwrap();
+        split_pane(&window, &second, gtk::Orientation::Vertical);
+        let third = current_pane(&window).unwrap();
+        run_action(&window, "new-tab");
+        run_action(&window, "tab-1");
+        run_action(&window, "next-pane");
+        assert_eq!(current_pane(&window), Some(first));
+        run_action(&window, "next-pane");
+        assert_eq!(current_pane(&window), Some(second));
+        run_action(&window, "next-pane");
+        assert_eq!(current_pane(&window), Some(third.clone()));
+        run_action(&window, "previous-pane");
+        run_action(&window, "previous-pane");
+        run_action(&window, "previous-pane");
+        assert_eq!(current_pane(&window), Some(third));
         window.window.close();
     });
 }
@@ -966,17 +1119,17 @@ fn terminal_output_comes_back_after_a_restart() {
         shared.settings.borrow_mut().shell = Some(shell("before", "from before the restart"));
         let window = new_window(&shared, None, true);
         let pane = current_pane(&window).unwrap();
-        let tab = |index: usize| window.panes.borrow()[&pane].tabs.borrow()[index].clone();
-        let kept = tab(0);
+        let kept = window.panes.borrow()[&pane].current().unwrap();
         wait_until(|| kept.terminal.export(10).contains("from before"));
         // A tab closed before quitting doesn't come back by itself; its
         // output is kept to reopen it.
         new_tab(&window, &pane, None);
-        let closed = tab(1);
+        let closed_pane = current_pane(&window).unwrap();
+        let closed = window.panes.borrow()[&closed_pane].current().unwrap();
         wait_until(|| closed.terminal.export(10).contains("from before"));
         save_output(&shared, &shared.windows());
         assert!(session::scrollback::load(closed.id).is_some());
-        close_tab(&window, &pane, &closed);
+        close_tab(&window, &closed_pane, &closed);
         window.window.close();
         assert!(session::scrollback::load(kept.id).is_some());
         assert!(session::scrollback::load(closed.id).is_some());
@@ -1019,7 +1172,7 @@ fn context_tracks_shell_directory_changes() {
             let Entry::Workspace(workspace) = &context.sidebar[0] else {
                 return false;
             };
-            matches!(&workspace.layout, Layout::Pane { cwd, .. } if *cwd == project)
+            matches!(&workspace.tabs[workspace.active_tab].layout, Layout::Pane { cwd, .. } if *cwd == project)
         });
         window.window.close();
     });
@@ -1156,6 +1309,7 @@ fn zoomed_panes_fill_the_workspace_until_the_layout_changes() {
             split_pane(&window, &first, gtk::Orientation::Horizontal);
             let ws = active_workspace(&window).unwrap();
             let paned = ws
+                .current_tab()
                 .layout
                 .first_child()
                 .unwrap()
@@ -1171,17 +1325,24 @@ fn zoomed_panes_fill_the_workspace_until_the_layout_changes() {
             let Entry::Workspace(saved) = &saved.sidebar[0] else {
                 panic!("workspace not saved")
             };
-            assert!(matches!(saved.layout, Layout::Split { .. }));
+            assert!(matches!(
+                saved.tabs[saved.active_tab].layout,
+                Layout::Split { .. }
+            ));
 
             // Saved zoomed, it comes back zoomed.
             let mut copy = workspace_snapshot(&window, window.active.get().unwrap()).unwrap();
-            let Layout::Split { start, .. } = &copy.layout else {
+            let Layout::Split { start, .. } = &copy.tabs[copy.active_tab].layout else {
                 panic!("a split")
             };
             assert!(matches!(**start, Layout::Pane { zoomed: true, .. }));
             copy.id = Uuid::new_v4();
             add_workspace_ui(&window, &copy);
-            let restored = window.workspaces.borrow()[&copy.id].zoomed.upgrade();
+            select_main_tab_id(&window, copy.id, copy.tabs[copy.active_tab].id);
+            let restored = window.workspaces.borrow()[&copy.id]
+                .current_tab()
+                .zoomed
+                .upgrade();
             assert!(restored.is_some_and(|pane| pane.has_css_class("zoomed")));
 
             // Zooming again brings the other one back.
@@ -1193,7 +1354,7 @@ fn zoomed_panes_fill_the_workspace_until_the_layout_changes() {
             zoom_pane(&window, &first);
             split_pane(&window, &first, gtk::Orientation::Vertical);
             assert!(second.is_visible());
-            assert!(ws.zoomed.upgrade().is_none());
+            assert!(ws.current_tab().zoomed.upgrade().is_none());
             window.window.close();
         },
     );
@@ -1206,21 +1367,22 @@ fn closed_tabs_reopen_with_their_folder_and_output() {
         let pane = current_pane(&window).unwrap();
         let folder = std::env::temp_dir();
         new_tab(&window, &pane, Some(folder.clone()));
-        let tabs = || window.panes.borrow()[&pane].tabs.borrow().clone();
-        let tab = tabs()[1].clone();
+        let opened = current_pane(&window).unwrap();
+        let tab = window.panes.borrow()[&opened].current().unwrap();
         tab.terminal.restore("hello from before\r\n");
-        close_tab(&window, &pane, &tab);
-        assert_eq!(tabs().len(), 1);
+        close_tab(&window, &opened, &tab);
+        assert_eq!(active_workspace(&window).unwrap().tabs.borrow().len(), 1);
 
         reopen_tab(&window);
-        let tabs = tabs();
-        assert_eq!(tabs.len(), 2);
-        assert_eq!(tabs[1].cwd, folder);
-        assert!(tabs[1].terminal.export(10).contains("hello from before"));
+        let reopened = current_pane(&window).unwrap();
+        let tab = window.panes.borrow()[&reopened].current().unwrap();
+        assert_eq!(active_workspace(&window).unwrap().tabs.borrow().len(), 2);
+        assert_eq!(tab.cwd, folder);
+        assert!(tab.terminal.export(10).contains("hello from before"));
         assert!(shared.session.borrow().closed.is_empty());
         // Nothing left to reopen: nothing happens.
         reopen_tab(&window);
-        assert_eq!(window.panes.borrow()[&pane].tabs.borrow().len(), 2);
+        assert_eq!(active_workspace(&window).unwrap().tabs.borrow().len(), 2);
         window.window.close();
     });
 }
@@ -1242,7 +1404,8 @@ fn typing_goes_to_every_pane_while_broadcasting() {
         assert!(
             active_workspace(&window)
                 .unwrap()
-                .holder
+                .current_tab()
+                .layout
                 .has_css_class("broadcast")
         );
         mirror_input(&window, &from, &typed);
@@ -1252,7 +1415,13 @@ fn typing_goes_to_every_pane_while_broadcasting() {
             "not twice into the source"
         );
         toggle_broadcast(&window);
-        assert!(!active_workspace(&window).unwrap().broadcast.get());
+        assert!(
+            !active_workspace(&window)
+                .unwrap()
+                .current_tab()
+                .broadcast
+                .get()
+        );
         window.window.close();
     });
 }
@@ -1789,9 +1958,8 @@ fn agents_started_directly_show_in_the_agents_panel() {
         std::thread::sleep(std::time::Duration::from_millis(300));
         assert_eq!(shell.terminal.running_program(), None);
         let command = vec![agent.to_string_lossy().into_owned()];
-        let index = add_command_tab(&window, &pane, &home_dir(), None, Some(command), &[]).unwrap();
-        activate_tab(&window, &pane, index, true);
-        let tab = window.panes.borrow()[&pane].tabs.borrow()[index].clone();
+        let pane = new_command_main_tab(&window, &home_dir(), command, &[]).unwrap();
+        let tab = window.panes.borrow()[&pane].current().unwrap();
         wait_until(|| tab.terminal.pid().is_some());
         assert_eq!(tab.terminal.running_program().as_deref(), Some("opencode"));
         wait_until(|| {
@@ -1844,7 +2012,8 @@ fn agents_started_through_a_wrapper_count_as_the_agent() {
                 fs::read_to_string(&seen).unwrap(),
                 "opencode\n--model\nopenai/gpt-6.1-sol\n--prompt\n# Task: x\n"
             );
-            let tab = window.panes.borrow()[&pane].current().unwrap();
+            let launched = current_pane(&window).unwrap();
+            let tab = window.panes.borrow()[&launched].current().unwrap();
             assert_eq!(tab.terminal.running_program().as_deref(), Some("opencode"));
             wait_until(|| {
                 panel::refresh(&shared);

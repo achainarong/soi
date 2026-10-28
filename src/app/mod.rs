@@ -1,5 +1,5 @@
 //! The GTK user interface: a sidebar of (optionally grouped) workspaces and,
-//! per workspace, a tree of split panes holding terminals.
+//! per workspace, main tabs with independent trees of terminal split panes.
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
@@ -23,6 +23,7 @@ use crate::theme::{self, TerminalTheme};
 
 mod actions;
 mod changes;
+mod layout_drag;
 mod panel;
 mod panes;
 mod persist;
@@ -34,6 +35,7 @@ mod switcher;
 mod task_view;
 mod tasks;
 mod window;
+mod workspace_tabs;
 mod workspaces;
 
 #[cfg(feature = "gui-tests")]
@@ -49,6 +51,7 @@ use persist::*;
 use settings_window::*;
 use sidebar::*;
 use window::*;
+use workspace_tabs::*;
 use workspaces::*;
 
 const APP_ID: &str = "dev.soi.Soi";
@@ -97,7 +100,7 @@ const SIGHUP: i32 = 1;
 const SIGINT: i32 = 2;
 const SIGTERM: i32 = 15;
 
-/// One terminal in a pane; a pane shows one of its tabs at a time.
+/// A terminal session in a pane, with stable identity for agent reports and output.
 struct Tab {
     /// Tells agents' reports apart (`SOI_TAB_ID`).
     id: Uuid,
@@ -106,7 +109,7 @@ struct Tab {
     agent: RefCell<Agent>,
     /// Marks the tab when its agent needs you.
     dot: gtk::Label,
-    /// The tab in the pane header: title and close button.
+    /// Terminal title and status in the pane header.
     button: gtk::Box,
     title: gtk::Label,
     /// What the program reports of its progress (OSC 9;4), when it does
@@ -119,8 +122,8 @@ struct Tab {
     saved_output: Cell<u64>,
 }
 
-/// Live state of one pane. The pane widget itself is a `gtk::Box` (header +
-/// terminals) and is the key in `State::panes`.
+/// Live state of one terminal pane. The pane widget is a `gtk::Box`
+/// (header + terminal) and is the key in `State::panes`.
 struct Pane {
     tabs: RefCell<Vec<Rc<Tab>>>,
     active: Cell<usize>,
@@ -128,7 +131,6 @@ struct Pane {
     stack: gtk::Stack,
     /// The tabs in the header.
     strip: gtk::Box,
-    /// Shows where a dragged tab would go (see `DropZone`).
     drop_hint: gtk::Box,
 }
 
@@ -169,8 +171,7 @@ struct Shared {
     tabs: RefCell<HashMap<Uuid, Weak<Tab>>>,
     /// What the agents panels show now (see `panel::refresh`).
     agents_shown: RefCell<String>,
-    /// The tab being dragged onto a pane, if any (see `TabDrop`).
-    tab_drop: RefCell<TabDrop>,
+    layout_drag: RefCell<layout_drag::LayoutDrag>,
 }
 
 impl Shared {
@@ -194,17 +195,31 @@ struct WorkspaceUi {
     /// The terminals, and on the right the plan while it is shown, with a
     /// divider between them to drag.
     plan_split: gtk::Paned,
-    /// Its only child is the root of the split tree.
-    layout: gtk::Box,
+    tab_strip: gtk::Box,
+    tab_stack: gtk::Stack,
+    tabs: RefCell<Vec<Rc<MainTabUi>>>,
+    active_tab: Cell<usize>,
     /// How wide the plan was last, for the next time it opens.
     plan_width: Cell<i32>,
-    last_focus: glib::WeakRef<gtk::Box>,
-    /// The pane filling the workspace for now, the others hidden (see `zoom_pane`).
-    zoomed: glib::WeakRef<gtk::Box>,
-    /// What's typed into one pane goes to all of them (see `broadcast_input`).
-    broadcast: Cell<bool>,
     /// The plan beside the terminal, while it is shown (see `preview::toggle_for`).
     plan_panel: RefCell<Option<Rc<preview::Plan>>>,
+}
+
+struct MainTabUi {
+    id: Uuid,
+    name: RefCell<String>,
+    button: gtk::Box,
+    label: gtk::Label,
+    layout: gtk::Box,
+    last_focus: glib::WeakRef<gtk::Box>,
+    zoomed: glib::WeakRef<gtk::Box>,
+    broadcast: Cell<bool>,
+}
+
+impl WorkspaceUi {
+    fn current_tab(&self) -> Rc<MainTabUi> {
+        self.tabs.borrow()[self.active_tab.get()].clone()
+    }
 }
 
 /// Sidebar structure; workspace details live in `State::workspaces`.
@@ -366,7 +381,7 @@ fn init_shared(app: &gtk::Application) -> Rc<Shared> {
         zoom: Cell::new(zoom),
         tabs: RefCell::default(),
         agents_shown: RefCell::default(),
-        tab_drop: RefCell::default(),
+        layout_drag: RefCell::default(),
     });
     // The terminals' font with the zoom and window scale, before any opens.
     apply_settings(&shared);

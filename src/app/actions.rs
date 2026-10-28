@@ -311,17 +311,26 @@ pub(super) fn run_action(state: &App, id: &str) {
             }
         }
         "close-tab" => {
-            let current = pane.and_then(|pane| {
-                let tab = state.panes.borrow().get(&pane)?.current()?;
-                Some((pane, tab))
-            });
-            if let Some((pane, tab)) = current {
-                request_close_tab(state, &pane, &tab);
+            if let (Some(workspace), Some(ws)) = (state.active.get(), active_workspace(state)) {
+                request_close_main_tab(state, workspace, ws.current_tab().id);
+            }
+        }
+        "close-pane" => {
+            if let Some(pane) = pane {
+                let running = running_in(state, std::slice::from_ref(&pane));
+                let weak = Rc::downgrade(state);
+                confirm_close(state, "this pane", running, move || {
+                    if let Some(state) = weak.upgrade() {
+                        close_pane(&state, &pane);
+                    }
+                });
             }
         }
         "reopen-tab" => reopen_tab(state),
-        "next-tab" => cycle_tab(state, 1),
-        "previous-tab" => cycle_tab(state, -1),
+        "next-tab" => cycle_main_tab(state, 1),
+        "previous-tab" => cycle_main_tab(state, -1),
+        "next-pane" => cycle_pane(state, 1),
+        "previous-pane" => cycle_pane(state, -1),
         "split-right" | "split-down" => {
             if let Some(pane) = pane {
                 let orientation = if id == "split-right" {
@@ -387,6 +396,13 @@ pub(super) fn run_action(state: &App, id: &str) {
         "zoom-reset" => zoom(state, None),
         "quit" => quit(&state.shared),
         _ => {
+            if let Some(n) = id
+                .strip_prefix("tab-")
+                .and_then(|n| n.parse::<usize>().ok())
+            {
+                select_main_tab(state, n);
+                return;
+            }
             let n = id
                 .strip_prefix("workspace-")
                 .and_then(|n| n.parse::<usize>().ok());
