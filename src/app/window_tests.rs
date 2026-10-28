@@ -1895,46 +1895,67 @@ fn skills_commands_and_collections_are_picked_by_clicking() {
             let nothing = super::requests::Picker::new(&home, &[], &[], true, None);
             assert!(nothing.skills().is_empty() && nothing.collection().is_none());
 
-            // A collection made in the settings, by clicking.
-            let section = super::requests::collections_section();
-            let add = {
-                fn button(root: &gtk::Widget) -> Option<gtk::Button> {
-                    if let Some(b) = root.downcast_ref::<gtk::Button>()
-                        && b.label().as_deref() == Some("Add collection")
-                    {
-                        return Some(b.clone());
-                    }
-                    let mut child = root.first_child();
-                    while let Some(widget) = child {
-                        if let Some(found) = button(&widget) {
-                            return Some(found);
-                        }
-                        child = widget.next_sibling();
-                    }
-                    None
+            // A collection made in Settings ▸ Collections, by clicking.
+            let page = super::requests::collections_page();
+            fn find<W: IsA<gtk::Widget>>(root: &gtk::Widget, ok: &dyn Fn(&W) -> bool) -> Option<W> {
+                if let Some(w) = root.downcast_ref::<W>()
+                    && ok(w)
+                {
+                    return Some(w.clone());
                 }
-                button(&section).unwrap()
-            };
-            add.emit_clicked();
-            toggle(&section, "tdd").unwrap().set_active(true);
-            toggle(&section, "/review").unwrap().set_active(true);
-            let mut list = crate::collections::load();
+                let mut child = root.first_child();
+                while let Some(widget) = child {
+                    if let Some(found) = find(&widget, ok) {
+                        return Some(found);
+                    }
+                    child = widget.next_sibling();
+                }
+                None
+            }
+            find::<gtk::Button>(&page, &|b| b.label().as_deref() == Some("New collection"))
+                .unwrap()
+                .emit_clicked();
+            let name = find::<gtk::Entry>(&page, &|_| true).unwrap();
+            name.set_text("C++");
+            let tdd = toggle(&page, "tdd").unwrap();
+            tdd.set_active(true);
+            assert!(tdd.has_css_class("soi-chip"), "chosen toggles are styled");
+            toggle(&page, "/review").unwrap().set_active(true);
+            find::<gtk::CheckButton>(&page, &|c| {
+                c.label().as_deref() == Some("Default for new tasks")
+            })
+            .unwrap()
+            .set_active(true);
+            let list = crate::collections::load();
+            assert_eq!(list.len(), 1);
+            assert_eq!(list[0].name, "C++");
             assert_eq!(list[0].skills, ["tdd"]);
             assert_eq!(list[0].commands, ["review"]);
-            assert!(!list[0].default);
-            crate::collections::set_default(&mut list, Some(0));
-            crate::collections::save(&list).unwrap();
+            assert!(list[0].default);
+            let dropdown = find::<gtk::DropDown>(&page, &|_| true).unwrap();
+            let names = dropdown.model().and_downcast::<gtk::StringList>().unwrap();
+            assert_eq!(names.string(0).as_deref(), Some("C++ (default)"));
 
             // The default is chosen for a new task, toggles and all.
             let default = crate::collections::default_name(&crate::collections::load());
             let picker = super::requests::Picker::new(&home, &[], &[], true, default.as_deref());
-            assert_eq!(picker.collection().as_deref(), Some("New collection"));
+            assert_eq!(picker.collection().as_deref(), Some("C++"));
             assert_eq!(picker.skills(), ["tdd"]);
             assert_eq!(picker.commands(), ["review"]);
             toggle(&picker.widget.clone().upcast(), "grill")
                 .unwrap()
                 .set_active(true);
             assert_eq!(picker.skills(), ["grill", "tdd"]);
+            // Chosen ones come first.
+            let first = toggle(&picker.widget.clone().upcast(), "tdd")
+                .unwrap()
+                .parent()
+                .and_downcast::<gtk::FlowBoxChild>()
+                .unwrap();
+            toggle(&picker.widget.clone().upcast(), "grill")
+                .unwrap()
+                .set_active(false);
+            assert_eq!(first.index(), 0, "tdd, chosen, before grill");
             // Task details keep what the task has, not the default.
             let saved = super::requests::Picker::new(&home, &["gone".into()], &[], true, None);
             assert_eq!(saved.skills(), ["gone"]);

@@ -333,9 +333,11 @@ setup that requires a real terminal should be guarded appropriately.
 
 ### Skill and command collections
 
-**Settings ▸ Agents ▸ Skill and command collections** keeps sets of skills
-and commands you request together, say `tdd` and `/review` for backend work.
-Add a collection, name it, and click the skills and commands it chooses.
+**Settings ▸ Collections** keeps sets of skills and commands you request
+together, say `tdd` and `/review` for backend work. Click **New
+collection**, name it, and click the skills and commands it chooses (the
+filter narrows long lists; chosen ones move to the front). The dropdown
+switches between collections, the trash button deletes one.
 Tick **Default for new tasks** on one to have New task worktree choose it
 every time; at most one is the default, and you can still pick another
 collection, none, or change the toggles for that task. Only your own skills

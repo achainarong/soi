@@ -175,6 +175,10 @@ window.soi-settings button.capturing {{ border-color: {accent}; color: {accent};
 window.soi-settings .soi-section {{ font-weight: bold; color: {accent}; }}
 window.soi-settings .soi-note {{ color: {accent}; }}
 window.soi-settings button.changed {{ color: {accent}; }}
+button.soi-chip {{ padding: 2px 10px; border-radius: 999px; }}
+window.soi-settings button.soi-chip:checked, window.soi-tools button.soi-chip:checked {{
+  background-color: {accent}; color: {solid}; border-color: {accent};
+}}
 .agent-working {{ color: {yellow}; }}
 .agent-input {{ color: {red}; }}
 .agent-done {{ color: {green}; }}
@@ -330,6 +334,11 @@ pub(super) fn settings_content(state: &App) -> gtk::Widget {
         &scrolled(&panel::settings_page(state)),
         Some("agents"),
         "Agents",
+    );
+    stack.add_titled(
+        &scrolled(&super::requests::collections_page()),
+        Some("collections"),
+        "Collections",
     );
     if let Some(name) = previous {
         stack.set_visible_child_name(&name);
