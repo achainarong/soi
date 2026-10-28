@@ -8,6 +8,45 @@ restart. Written in Rust with GTK 4, with its own terminal engine.
 *Soi* (ซอย) is Thai for the small lanes that branch off a main road, as
 your workspaces and panes branch off the sidebar.
 
+## Quick install
+
+On Linux (amd64, arm64) or macOS (Apple Silicon), paste this into a
+terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/achainarong/soi/main/scripts/install.sh | sh
+```
+
+It downloads the latest [release](https://github.com/achainarong/soi/releases)
+(GTK is inside, nothing else to install) and puts it in place for you, no
+sudo needed:
+
+- **Linux**: the AppImage becomes `~/.local/bin/soi`, with an app menu entry
+  and icon. It needs glibc 2.39 or newer (Ubuntu 24.04, Debian 13,
+  Fedora 40 and newer, Arch).
+- **macOS**: `soi.app` goes to `~/Applications`, with the quarantine flag
+  removed (soi isn't notarized), and `~/.local/bin/soi` links to it.
+
+Then:
+
+1. Start soi from your app menu or Launchpad, or run `soi` (make sure
+   `~/.local/bin` is on your `PATH`; the script tells you if it isn't).
+2. To use Claude Code, OpenCode or Pi with soi, open Settings ▸ Agents, or
+   run `soi install-agents`.
+3. To update, run the same command again; settings and layouts stay.
+
+Options go before `sh`, e.g. `curl … | SOI_VERSION=v0.1.11 sh`:
+`SOI_VERSION` installs a given release, `SOI_BIN_DIR` changes where the
+`soi` command goes, `SOI_APP_DIR` (macOS) where `soi.app` goes.
+
+To uninstall, delete `~/.local/bin/soi`, plus
+`~/.local/share/applications/dev.soi.Soi.desktop` and
+`~/.local/share/icons/hicolor/scalable/apps/dev.soi.Soi.svg` on Linux or
+`~/Applications/soi.app` on macOS. Settings and layouts are in
+`~/.config/soi` and `~/.local/state/soi`.
+
+Other ways to install are under [Install](#install).
+
 ## Features
 
 - **Workspaces** in a sidebar, optionally in collapsible **groups**;
@@ -106,6 +145,7 @@ release download to starting Claude Code, OpenCode or Pi for a task.
 
 ### Download
 
+[Quick install](#quick-install) does these steps for you. By hand:
 [Releases](https://github.com/achainarong/soi/releases) have soi with GTK
 inside, so you don't need GTK installed:
 
