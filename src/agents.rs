@@ -602,6 +602,9 @@ const reporter = () => {
   const socket = process.env.SOI_SOCKET
   const tab = process.env.SOI_TAB_ID
   if (!socket || !tab) return undefined
+  // 2.x's background server works for every terminal, but has the
+  // environment of the tab that started it: it can't say which tab asks.
+  if (process.argv.includes("--service")) return undefined
 
   // The session the user works in; subagents' sessions have a parent.
   let main = ""
