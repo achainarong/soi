@@ -27,14 +27,11 @@ def dependencies(path):
     return [line.strip().split(" (compatibility version", 1)[0] for line in lines]
 
 
-def unsigned_copy(source, destination):
+def writable_copy(source, destination):
+    # Keep the signature: removing it leaves a gap in __LINKEDIT that
+    # install_name_tool rejects. build() re-signs every image afterwards.
     shutil.copy2(source, destination)
     destination.chmod(0o755)
-    signed = subprocess.run(
-        ["codesign", "--display", str(destination)], capture_output=True
-    ).returncode == 0
-    if signed:
-        run("codesign", "--remove-signature", destination)
 
 
 def minimum_macos(path):
@@ -85,7 +82,7 @@ class Libraries:
             return name
         self.sources[name] = source
         destination = self.frameworks / name
-        unsigned_copy(source, destination)
+        writable_copy(source, destination)
         self.rewrite(source, destination, "@loader_path/")
         # Loader modules are Mach-O bundles, not dylibs, and have no LC_ID_DYLIB.
         if source.suffix == ".dylib":
@@ -213,7 +210,7 @@ def build(binary, bundle, version):
     macos = contents / "MacOS"
     macos.mkdir(parents=True)
     executable = macos / "soi-bin"
-    unsigned_copy(binary, executable)
+    writable_copy(binary, executable)
     libraries = Libraries(contents)
     libraries.rewrite(binary, executable, "@executable_path/../Frameworks/")
     output = resources(contents, libraries)

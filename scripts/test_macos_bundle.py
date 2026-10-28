@@ -48,7 +48,7 @@ class BundleTests(unittest.TestCase):
         a.write_bytes(b"original a")
         b.write_bytes(b"original b")
         libraries = bundle.Libraries(contents)
-        with patch.object(bundle, "unsigned_copy", side_effect=bundle.shutil.copy2), \
+        with patch.object(bundle, "writable_copy", side_effect=bundle.shutil.copy2), \
              patch.object(bundle, "minimum_macos", return_value=(12, 0, 0)), \
              patch.object(bundle, "dependencies", side_effect=lambda p: [str(b if p == a else a)]), \
              patch.object(bundle, "run"):
