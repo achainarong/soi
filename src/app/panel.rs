@@ -416,7 +416,13 @@ fn command_finished(shared: &Rc<Shared>, tab: &Rc<Tab>, finished: &crate::term::
     } else {
         format!("{workspace} · {after}")
     };
-    notify_desktop(shared, tab.id, &title, &body, state);
+    // Nothing waits for you after a failure: a cross, not the dots.
+    let picture = if finished.exit == Some(0) {
+        Picture::State(state)
+    } else {
+        Picture::Failed
+    };
+    notify_desktop(shared, tab.id, &title, &body, picture);
     let notice = Notice {
         workspace,
         what: format!("{command} {how} {after}"),
@@ -1176,7 +1182,7 @@ fn announce(shared: &Rc<Shared>, tab: &Rc<Tab>, agent: &Agent) {
     };
     let program = agent.program.as_deref().unwrap_or("agent");
     let (title, body) = desktop_text(&workspace, program, what, &agent.message);
-    notify_desktop(shared, tab.id, &title, &body, agent.state);
+    notify_desktop(shared, tab.id, &title, &body, Picture::State(agent.state));
     let notice = Notice {
         workspace,
         what: format!("{program} {what}"),
@@ -1293,7 +1299,7 @@ fn size_notices(split: &gtk::Paned) {
 
 /// Tells the desktop about an agent that needs you, when no soi window is
 /// in front (otherwise the notifications under the agents do). Clicking it goes to the agent.
-fn notify_desktop(shared: &Shared, tab: Uuid, title: &str, body: &str, state: AgentState) {
+fn notify_desktop(shared: &Shared, tab: Uuid, title: &str, body: &str, picture: Picture) {
     let windows = shared.windows();
     if !shared.settings.borrow().desktop_notifications()
         || windows.iter().any(|state| state.window.is_active())
@@ -1309,10 +1315,10 @@ fn notify_desktop(shared: &Shared, tab: Uuid, title: &str, body: &str, state: Ag
     }
     // Without one, desktops fill the picture with whatever they find. A
     // file, not a theme name: macOS has no icon themes.
-    if let Some(path) = state_icon(state) {
+    if let Some(path) = state_icon(picture) {
         notification.set_icon(&gio::FileIcon::new(&gio::File::for_path(path)));
     }
-    if state == AgentState::Input {
+    if picture == Picture::State(AgentState::Input) {
         notification.set_priority(gio::NotificationPriority::High);
     }
     notification.set_default_action_and_target_value(
@@ -1335,27 +1341,39 @@ fn desktop_text(workspace: &str, program: &str, what: &str, message: &str) -> (S
     (title, body)
 }
 
+/// What a desktop notification shows: an agent's state, or a command that
+/// failed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Picture {
+    State(AgentState),
+    Failed,
+}
+
 /// A picture for the state: a colored disc with a white mark, drawn once
 /// into the cache directory.
-fn state_icon(state: AgentState) -> Option<PathBuf> {
+fn state_icon(picture: Picture) -> Option<PathBuf> {
+    let name = match picture {
+        Picture::State(state) => state.class(),
+        Picture::Failed => "command-failed",
+    };
     // Bump the suffix when the drawing changes, so old files aren't reused.
     let path = glib::user_cache_dir()
         .join("soi")
-        .join(format!("{}-1.png", state.class()));
+        .join(format!("{name}-1.png"));
     if !path.exists() {
         fs::create_dir_all(path.parent()?).ok()?;
-        draw_state_icon(state)?.save_to_png(&path).ok()?;
+        draw_state_icon(picture)?.save_to_png(&path).ok()?;
     }
     Some(path)
 }
 
-fn draw_state_icon(state: AgentState) -> Option<gdk::Texture> {
+fn draw_state_icon(picture: Picture) -> Option<gdk::Texture> {
     const SIZE: i32 = 128;
-    let (r, g, b) = match state {
-        AgentState::Input => (0.89, 0.30, 0.27),
-        AgentState::Done => (0.26, 0.69, 0.40),
-        AgentState::Working => (0.25, 0.52, 0.89),
-        AgentState::Idle | AgentState::Exited => (0.47, 0.49, 0.53),
+    let (r, g, b) = match picture {
+        Picture::State(AgentState::Input) | Picture::Failed => (0.89, 0.30, 0.27),
+        Picture::State(AgentState::Done) => (0.26, 0.69, 0.40),
+        Picture::State(AgentState::Working) => (0.25, 0.52, 0.89),
+        Picture::State(AgentState::Idle | AgentState::Exited) => (0.47, 0.49, 0.53),
     };
     let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, SIZE, SIZE).ok()?;
     {
@@ -1368,23 +1386,23 @@ fn draw_state_icon(state: AgentState) -> Option<gdk::Texture> {
         cr.set_line_width(12.0);
         cr.set_line_cap(cairo::LineCap::Round);
         cr.set_line_join(cairo::LineJoin::Round);
-        match state {
+        match picture {
             // A check mark.
-            AgentState::Done => {
+            Picture::State(AgentState::Done) => {
                 cr.move_to(38.0, 66.0);
                 cr.line_to(56.0, 84.0);
                 cr.line_to(90.0, 46.0);
                 cr.stroke().ok()?;
             }
             // Three dots: it waits for you.
-            AgentState::Input | AgentState::Working => {
+            Picture::State(AgentState::Input | AgentState::Working) => {
                 for x in [40.0, 64.0, 88.0] {
                     cr.arc(x, c, 9.0, 0.0, std::f64::consts::TAU);
                     cr.fill().ok()?;
                 }
             }
             // A cross.
-            AgentState::Exited => {
+            Picture::State(AgentState::Exited) | Picture::Failed => {
                 cr.move_to(46.0, 46.0);
                 cr.line_to(82.0, 82.0);
                 cr.move_to(82.0, 46.0);
@@ -1392,7 +1410,7 @@ fn draw_state_icon(state: AgentState) -> Option<gdk::Texture> {
                 cr.stroke().ok()?;
             }
             // A pause.
-            AgentState::Idle => {
+            Picture::State(AgentState::Idle) => {
                 for x in [52.0, 76.0] {
                     cr.move_to(x, 44.0);
                     cr.line_to(x, 84.0);
