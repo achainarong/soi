@@ -30,18 +30,34 @@ fn theme_css_parses_cleanly() {
 }
 
 fn default_shortcuts_are_valid() {
-    for binding in BINDINGS.iter().filter(|b| !b.default_accel().is_empty()) {
-        let (key, mods) = parse_accel(binding.default_accel())
-            .unwrap_or_else(|| panic!("{} doesn't parse", binding.id));
-        // (Not gtk::accelerator_valid: it rejects Tab, which works fine.)
-        assert!(
-            key.name().is_some() && !mods.is_empty() || binding.id == "rename-workspace",
-            "{}",
-            binding.id
-        );
+    for binding in BINDINGS {
+        for accel in keybindings::accels(binding.default_accel()) {
+            let (key, mods) =
+                parse_accel(accel).unwrap_or_else(|| panic!("{} doesn't parse", binding.id));
+            // (Not gtk::accelerator_valid: it rejects Tab, which works fine.)
+            assert!(
+                key.name().is_some() && !mods.is_empty() || binding.id == "rename-workspace",
+                "{}",
+                binding.id
+            );
+        }
     }
     assert!(same_accel("<Control><Shift>T", "<Shift><Control>t"));
     assert!(!same_accel("<Control>t", "<Shift><Control>t"));
+    // Several keys: any one in common is the same.
+    assert!(same_accel(
+        "<Meta>Return|<Control><Alt>Escape",
+        "<Control><Alt>Escape"
+    ));
+    assert!(same_accel("<Alt>x", "<Meta>Return|<Alt>X"));
+    assert!(!same_accel(
+        "<Meta>Return|<Control><Alt>Escape",
+        "<Meta>Escape"
+    ));
+    assert_eq!(
+        accel_label("<Control>t|<Alt>x"),
+        format!("{} or {}", accel_label("<Control>t"), accel_label("<Alt>x"))
+    );
     assert_eq!(accel_label(""), "Off");
     assert!(parse_accel("").is_none() && !same_accel("", ""));
 }

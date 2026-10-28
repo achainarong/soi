@@ -248,7 +248,7 @@ Cmd instead, with these common bindings:
 | `Cmd+Ctrl+Down` / `Cmd+Ctrl+Up` | Next / previous workspace within the current group |
 | `Cmd+Ctrl+Shift+Down` / `Cmd+Ctrl+Shift+Up` | Next / previous group |
 | `Cmd+P` / `Cmd+N` | Quick switcher / new window |
-| `Cmd+Enter` | Window fills the screen (not fullscreen), and back |
+| `Cmd+Enter` or `Ctrl+Option+Esc` | Window fills the screen (not fullscreen), and back |
 | `Ctrl+Option+Arrows` | Window to the left / right / top / bottom half of the screen |
 | `Cmd+C` / `Cmd+V` / `Cmd+F` | Copy / paste / search |
 | `Cmd+Shift+Y` / `Cmd+Shift+Space` | Copy last output / browse mode |

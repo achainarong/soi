@@ -243,39 +243,39 @@ pub(super) fn install_shortcuts(state: &App) {
     controller.set_propagation_phase(gtk::PropagationPhase::Capture);
     let keys = state.shared.keybindings.borrow();
     for binding in BINDINGS {
-        let Some((key, mods)) = parse_accel(keys.get(binding.id)) else {
-            continue;
-        };
-        let mut keyvals = vec![key];
-        // The same key on the number pad, and "=" for "+" (no Shift needed
-        // on US keyboards).
-        keyvals.extend(match key {
-            gdk::Key::plus => &[gdk::Key::equal, gdk::Key::KP_Add][..],
-            gdk::Key::minus => &[gdk::Key::KP_Subtract][..],
-            gdk::Key::_0 => &[gdk::Key::KP_0][..],
-            _ => &[][..],
-        });
-        // Shift+Tab arrives as ISO_Left_Tab.
-        if key == gdk::Key::Tab && mods.contains(gdk::ModifierType::SHIFT_MASK) {
-            keyvals.push(gdk::Key::ISO_Left_Tab);
-        }
-        for keyval in keyvals {
-            let weak = Rc::downgrade(state);
-            let id = binding.id;
-            let edits = edits_text(keyval, mods);
-            let action = gtk::CallbackAction::new(move |window, _| {
-                if edits && editing_text(window) {
-                    return glib::Propagation::Proceed;
-                }
-                if let Some(state) = weak.upgrade() {
-                    run_action(&state, id);
-                }
-                glib::Propagation::Stop
+        // Every key the action has, when it lists several.
+        for (key, mods) in keybindings::accels(keys.get(binding.id)).filter_map(parse_accel) {
+            let mut keyvals = vec![key];
+            // The same key on the number pad, and "=" for "+" (no Shift needed
+            // on US keyboards).
+            keyvals.extend(match key {
+                gdk::Key::plus => &[gdk::Key::equal, gdk::Key::KP_Add][..],
+                gdk::Key::minus => &[gdk::Key::KP_Subtract][..],
+                gdk::Key::_0 => &[gdk::Key::KP_0][..],
+                _ => &[][..],
             });
-            controller.add_shortcut(gtk::Shortcut::new(
-                Some(gtk::KeyvalTrigger::new(keyval, mods)),
-                Some(action),
-            ));
+            // Shift+Tab arrives as ISO_Left_Tab.
+            if key == gdk::Key::Tab && mods.contains(gdk::ModifierType::SHIFT_MASK) {
+                keyvals.push(gdk::Key::ISO_Left_Tab);
+            }
+            for keyval in keyvals {
+                let weak = Rc::downgrade(state);
+                let id = binding.id;
+                let edits = edits_text(keyval, mods);
+                let action = gtk::CallbackAction::new(move |window, _| {
+                    if edits && editing_text(window) {
+                        return glib::Propagation::Proceed;
+                    }
+                    if let Some(state) = weak.upgrade() {
+                        run_action(&state, id);
+                    }
+                    glib::Propagation::Stop
+                });
+                controller.add_shortcut(gtk::Shortcut::new(
+                    Some(gtk::KeyvalTrigger::new(keyval, mods)),
+                    Some(action),
+                ));
+            }
         }
     }
     state.window.add_controller(controller.clone());
@@ -446,11 +446,17 @@ pub(super) fn parse_accel(accel: &str) -> Option<(gdk::Key, gdk::ModifierType)> 
     gtk::accelerator_parse(accel).filter(|(key, _)| key.name().is_some())
 }
 
-/// How an accelerator is shown: "Shift+Ctrl+T", or "Off".
+/// How an accelerator is shown: "Shift+Ctrl+T", "⌘↩ or ⌃⌥Esc" for
+/// several keys, or "Off".
 pub(super) fn accel_label(accel: &str) -> String {
-    match parse_accel(accel) {
-        Some((key, mods)) => gtk::accelerator_get_label(key, mods).to_string(),
-        None => "Off".into(),
+    let labels: Vec<String> = keybindings::accels(accel)
+        .filter_map(parse_accel)
+        .map(|(key, mods)| gtk::accelerator_get_label(key, mods).to_string())
+        .collect();
+    if labels.is_empty() {
+        "Off".into()
+    } else {
+        labels.join(" or ")
     }
 }
 
@@ -463,10 +469,12 @@ pub(super) fn shortcut_hint(shared: &Shared, label: &str, id: &str) -> String {
     }
 }
 
-/// Whether two accelerators mean the same keys.
+/// Whether two accelerators share keys: any of `a`'s is one of `b`'s.
 pub(super) fn same_accel(a: &str, b: &str) -> bool {
     let normalize = |accel: &str| parse_accel(accel).map(|(key, mods)| (key.to_lower(), mods));
-    normalize(a).is_some() && normalize(a) == normalize(b)
+    keybindings::accels(a)
+        .filter_map(normalize)
+        .any(|a| keybindings::accels(b).filter_map(normalize).any(|b| a == b))
 }
 
 /// Binds `accel` ("" = off) to an action, taking it away from any other.

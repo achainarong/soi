@@ -1,7 +1,8 @@
 //! Keyboard shortcuts: the actions that can be bound, their default keys,
 //! and the user's changes in `~/.config/soi/keybindings.conf`, as lines
-//! like `new-tab = <Shift><Control>t` (GTK accelerator syntax). An empty
-//! value turns a shortcut off; actions not listed use their default.
+//! like `new-tab = <Shift><Control>t` (GTK accelerator syntax). Several
+//! keys for one action are separated by `|`. An empty value turns a
+//! shortcut off; actions not listed use their default.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -324,7 +325,7 @@ pub const BINDINGS: &[Binding] = &[
         "maximize-window",
         "Fill the screen (not fullscreen) or back",
         "<Alt>F10",
-        "<Meta>Return",
+        "<Meta>Return|<Control><Alt>Escape",
     ),
     bind(
         "Windows",
@@ -439,6 +440,11 @@ pub const BINDINGS: &[Binding] = &[
 
 pub fn binding(id: &str) -> Option<&'static Binding> {
     BINDINGS.iter().find(|b| b.id == id)
+}
+
+/// The keys of a shortcut, which may list several separated by `|`.
+pub fn accels(accel: &str) -> impl Iterator<Item = &str> {
+    accel.split('|').map(str::trim).filter(|a| !a.is_empty())
 }
 
 fn path() -> Option<PathBuf> {
@@ -568,17 +574,29 @@ mod tests {
             BINDINGS.iter().map(|b| b.linux).collect::<Vec<_>>(),
             BINDINGS.iter().map(|b| b.mac).collect(),
         ] {
-            let mut used: Vec<_> = defaults.into_iter().filter(|a| !a.is_empty()).collect();
+            let mut used: Vec<_> = defaults.into_iter().flat_map(accels).collect();
             let count = used.len();
             used.sort();
             used.dedup();
             assert_eq!(used.len(), count, "two actions share a default");
         }
         // Ctrl is the terminal's on a Mac, unless Cmd is held too. Except
-        // Ctrl+Option+arrows to snap the window, as with Rectangle.
+        // Ctrl+Option to move the window, as with Rectangle.
+        let window_keys = |id: &str| id.starts_with("snap-") || id == "maximize-window";
         assert!(BINDINGS.iter().all(|b| {
-            !b.mac.contains("<Control>") || b.mac.contains("<Meta>") || b.id.starts_with("snap-")
+            accels(b.mac).all(|a| !a.contains("<Control>") || a.contains("<Meta>"))
+                || window_keys(b.id)
         }));
+    }
+
+    #[test]
+    fn splits_several_keys() {
+        assert_eq!(
+            accels(" <Meta>Return | <Control><Alt>Escape ").collect::<Vec<_>>(),
+            ["<Meta>Return", "<Control><Alt>Escape"]
+        );
+        assert_eq!(accels("").count(), 0);
+        assert_eq!(accels("<Meta>q").collect::<Vec<_>>(), ["<Meta>q"]);
     }
 
     #[test]
