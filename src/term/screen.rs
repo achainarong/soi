@@ -1729,7 +1729,8 @@ impl Perform for Term {
                 5 => self.respond("\x1b[0n"),
                 6 => {
                     let row = if self.cursor.origin {
-                        self.cursor.row - self.top
+                        // A restored cursor can sit above a region set later.
+                        self.cursor.row.saturating_sub(self.top)
                     } else {
                         self.cursor.row
                     };
@@ -2483,6 +2484,13 @@ mod tests {
     fn answers_cursor_position_query() {
         let mut term = run(10, 5, "\x1b[3;4H\x1b[6n");
         assert_eq!(term.take_responses(), b"\x1b[3;4R");
+    }
+
+    #[test]
+    fn cursor_query_above_origin_region_reports_its_top() {
+        // Origin mode, save at row 1, set a lower region, restore above it.
+        let mut term = run(10, 12, "\x1b[?6h\x1b7\x1b[5;10r\x1b8\x1b[6n");
+        assert_eq!(term.take_responses(), b"\x1b[1;1R");
     }
 
     #[test]
