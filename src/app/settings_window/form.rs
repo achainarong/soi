@@ -105,7 +105,8 @@ pub(in crate::app) fn settings_form(state: &App) -> gtk::Widget {
         }
     });
     // Hovering a scheme in the list previews it, until the pointer leaves
-    // the list or it closes.
+    // the list or it closes. Only once the pointer rests: sweeping over the
+    // list doesn't recolor everything at each row.
     let restore: Rc<dyn Fn()> = {
         let (dropdown, show) = (scheme.downgrade(), show.clone());
         Rc::new(move || {
@@ -114,35 +115,64 @@ pub(in crate::app) fn settings_form(state: &App) -> gtk::Widget {
             }
         })
     };
-    let hovers = Rc::new(Cell::new(0u64));
+    // The scheme under the pointer, and a count that cancels older waits.
+    let hovered: Rc<RefCell<Option<Option<String>>>> = Rc::default();
+    let waits = Rc::new(Cell::new(0u64));
+    let settle: Rc<dyn Fn()> = {
+        let (hovered, waits, restore) = (hovered.clone(), waits.clone(), restore.clone());
+        Rc::new(move || {
+            waits.set(waits.get() + 1);
+            let wait = waits.get();
+            let (hovered, waits, show, restore) = (
+                hovered.clone(),
+                waits.clone(),
+                show.clone(),
+                restore.clone(),
+            );
+            glib::timeout_add_local_once(std::time::Duration::from_millis(100), move || {
+                if waits.get() == wait {
+                    match hovered.borrow().clone() {
+                        Some(id) => show(id),
+                        None => restore(),
+                    }
+                }
+            });
+        })
+    };
     let factory = gtk::SignalListItemFactory::new();
-    let (setup_hovers, setup_restore) = (hovers.clone(), restore.clone());
+    let (setup_hovered, setup_settle) = (hovered.clone(), settle.clone());
     factory.connect_setup(move |_, item| {
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
             return;
         };
         let label = gtk::Label::builder().xalign(0.0).build();
         let motion = gtk::EventControllerMotion::new();
-        let (by_label, show, hovers) = (by_label.clone(), show.clone(), setup_hovers.clone());
-        let weak_label = label.downgrade();
+        let scheme_of = {
+            let (by_label, label) = (by_label.clone(), label.downgrade());
+            move || {
+                let label = label.upgrade()?;
+                by_label.get(label.label().as_str()).cloned()
+            }
+        };
+        let (hovered, settle, scheme) = (
+            setup_hovered.clone(),
+            setup_settle.clone(),
+            scheme_of.clone(),
+        );
         motion.connect_enter(move |_, _, _| {
-            hovers.set(hovers.get() + 1);
-            if let Some(label) = weak_label.upgrade()
-                && let Some(id) = by_label.get(label.label().as_str())
-            {
-                show(id.clone());
+            if let Some(id) = scheme() {
+                hovered.replace(Some(id));
+                settle();
             }
         });
-        let (hovers, restore) = (setup_hovers.clone(), setup_restore.clone());
+        let (hovered, settle) = (setup_hovered.clone(), setup_settle.clone());
         motion.connect_leave(move |_| {
-            // Moving to the next row enters it before this runs.
-            let left = hovers.get();
-            let (hovers, restore) = (hovers.clone(), restore.clone());
-            glib::idle_add_local_once(move || {
-                if hovers.get() == left {
-                    restore();
-                }
-            });
+            // Unless the next row was entered first.
+            let left = scheme_of();
+            if left.is_some() && *hovered.borrow() == left {
+                hovered.replace(None);
+                settle();
+            }
         });
         label.add_controller(motion);
         item.set_child(Some(&label));
@@ -162,8 +192,12 @@ pub(in crate::app) fn settings_form(state: &App) -> gtk::Widget {
     let mut child = scheme.first_child();
     while let Some(widget) = child {
         if let Some(popover) = widget.downcast_ref::<gtk::Popover>() {
-            let restore = restore.clone();
-            popover.connect_closed(move |_| restore());
+            let (hovered, waits, restore) = (hovered.clone(), waits.clone(), restore.clone());
+            popover.connect_closed(move |_| {
+                hovered.replace(None);
+                waits.set(waits.get() + 1);
+                restore();
+            });
         }
         child = widget.next_sibling();
     }
