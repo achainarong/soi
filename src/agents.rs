@@ -999,6 +999,10 @@ pub fn agent_path(shell: &str) -> String {
 type ShellPaths = Mutex<HashMap<String, Arc<OnceLock<String>>>>;
 
 fn cached_path(paths: &ShellPaths, shell: &str, load: impl FnOnce() -> String) -> String {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "nothing panics while this lock is held, so it is never poisoned"
+    )]
     let path = paths
         .lock()
         .unwrap()

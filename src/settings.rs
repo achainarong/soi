@@ -227,6 +227,10 @@ pub fn delete_profile(name: &str) -> io::Result<()> {
 }
 
 /// `base`, or `base 2`, `base 3`, … — whichever doesn't exist yet.
+#[expect(
+    clippy::expect_used,
+    reason = "an endless range always finds a free name"
+)]
 pub fn unique_profile_name(base: &str) -> String {
     let existing = list_profiles();
     (1..)

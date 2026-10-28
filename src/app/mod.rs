@@ -39,10 +39,16 @@ mod workspace_tabs;
 mod workspaces;
 
 #[cfg(feature = "gui-tests")]
+#[expect(clippy::unwrap_used, reason = "a failed check should panic")]
 mod css_tests;
 #[cfg(feature = "gui-tests")]
 pub(crate) mod gui_tests;
 #[cfg(feature = "gui-tests")]
+#[expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a failed check should panic"
+)]
 mod window_tests;
 
 use actions::*;
@@ -385,6 +391,7 @@ fn init_shared(app: &gtk::Application) -> Rc<Shared> {
     // Matches the installed icon (`make install`), for windows and the
     // taskbar. Only possible once GTK is running, i.e. in here.
     gtk::Window::set_default_icon_name(APP_ID);
+    #[expect(clippy::expect_used, reason = "GTK started, so it has a display")]
     let display = gdk::Display::default().expect("no display");
     let provider = gtk::CssProvider::new();
     provider.load_from_string(CSS);

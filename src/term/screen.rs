@@ -736,6 +736,7 @@ impl Term {
     /// joined by autowrap become one line again, split at the new width.
     /// The cursor stays on the same character, and images and prompt marks
     /// move with their lines. The row count is left to `resize`.
+    #[expect(clippy::expect_used, reason = "rewrapping starts each line with a row")]
     fn reflow(&mut self, cols: usize) {
         let old_scrollback = self.scrollback.len();
         let first_abs = self.scrolled_off - old_scrollback as i64;

@@ -39,6 +39,7 @@ pub(super) enum Edge {
 }
 
 impl Edge {
+    #[expect(clippy::unwrap_used, reason = "the minimum of four candidates")]
     fn at(x: f64, y: f64, width: f64, height: f64) -> Self {
         if width <= 0.0 || height <= 0.0 {
             return Self::Center;

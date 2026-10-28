@@ -232,6 +232,10 @@ fn major_version_of(program: &str, path: &str) -> Option<u32> {
     }
     let binary = crate::agents::find_program(program, path)?;
     let modified = fs::metadata(&binary).and_then(|m| m.modified()).ok()?;
+    #[expect(
+        clippy::unwrap_used,
+        reason = "nothing panics while this lock is held, so it is never poisoned"
+    )]
     let mut asked = ASKED.get_or_init(Mutex::default).lock().unwrap();
     *asked.entry((binary.clone(), modified)).or_insert_with(|| {
         probe_major_version(

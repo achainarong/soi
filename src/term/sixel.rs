@@ -93,6 +93,7 @@ impl Decoder {
                     if self.numbers.is_empty() {
                         self.numbers.push(0);
                     }
+                    #[expect(clippy::unwrap_used, reason = "pushed just above when empty")]
                     let last = self.numbers.last_mut().unwrap();
                     *last = last.saturating_mul(10).saturating_add((byte - b'0') as u32);
                     return;

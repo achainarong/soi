@@ -350,6 +350,10 @@ impl Plan {
         let accent = theme.ansi_colors()[4];
         let faint = |alpha: f32| gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), alpha);
         let table = self.buffer().tag_table();
+        #[expect(
+            clippy::expect_used,
+            reason = "every name used here is created in create_tags"
+        )]
         let tag = |name: &str| table.lookup(name).expect("created in create_tags");
         tag("code").set_background_rgba(Some(&faint(0.10)));
         tag("codeblock").set_paragraph_background_rgba(Some(&faint(0.06)));

@@ -242,6 +242,10 @@ pub(super) fn pick_project(state: &App, group: Option<Uuid>) {
 }
 
 /// A new workspace with a shell in the profile's start directory.
+#[expect(
+    clippy::expect_used,
+    reason = "an endless range always finds a free name"
+)]
 pub(super) fn new_terminal_workspace(state: &App, group: Option<Uuid>) {
     let mut ws = Workspace::new(state.shared.settings.borrow().start_dir());
     let taken: Vec<String> = state

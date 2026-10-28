@@ -64,6 +64,10 @@ struct InputQueue {
 }
 
 impl InputQueue {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "nothing panics while this lock is held, so it is never poisoned"
+    )]
     fn push(&self, bytes: &[u8]) -> io::Result<()> {
         let mut state = self.state.lock().unwrap();
         if state.closed {
@@ -80,6 +84,10 @@ impl InputQueue {
         Ok(())
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "nothing panics while this lock is held, so it is never poisoned"
+    )]
     fn take(&self) -> Option<Vec<u8>> {
         let mut state = self.state.lock().unwrap();
         while state.bytes.is_empty() && !state.closed {
@@ -92,6 +100,10 @@ impl InputQueue {
         Some(state.bytes.drain(..count).collect())
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "nothing panics while this lock is held, so it is never poisoned"
+    )]
     fn close(&self) {
         let mut state = self.state.lock().unwrap();
         state.closed = true;
