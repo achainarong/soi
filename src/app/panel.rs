@@ -3,6 +3,7 @@
 //! you look elsewhere are marked (panel row, tab, sidebar, a counter and a
 //! notification under the agents) until you look at them.
 
+use gtk::cairo;
 use std::time::Instant;
 
 use super::*;
@@ -402,18 +403,24 @@ fn command_finished(shared: &Rc<Shared>, tab: &Rc<Tab>, finished: &crate::term::
         Some(exit) => format!("failed (exit {exit})"),
         None => "ended".to_string(),
     };
-    let title = format!("{workspace}: {command} {how}");
-    let body = format!("after {}", elapsed(finished.took));
-    notify_desktop(shared, tab.id, &title, &body);
+    let after = format!("after {}", elapsed(finished.took));
+    // Green when it worked, red (as for an agent that asks) when not.
+    let state = if finished.exit == Some(0) {
+        AgentState::Done
+    } else {
+        AgentState::Input
+    };
+    let title = format!("{command} {how}");
+    let body = if workspace.is_empty() {
+        after.clone()
+    } else {
+        format!("{workspace} · {after}")
+    };
+    notify_desktop(shared, tab.id, &title, &body, state);
     let notice = Notice {
         workspace,
-        what: format!("{command} {how} {body}"),
-        // Green when it worked, red (as for an agent that asks) when not.
-        state: Some(if finished.exit == Some(0) {
-            AgentState::Done
-        } else {
-            AgentState::Input
-        }),
+        what: format!("{command} {how} {after}"),
+        state: Some(state),
         message: String::new(),
     };
     add_notice(shared, tab.id, &notice);
@@ -1168,8 +1175,8 @@ fn announce(shared: &Rc<Shared>, tab: &Rc<Tab>, agent: &Agent) {
         AgentState::Working => return,
     };
     let program = agent.program.as_deref().unwrap_or("agent");
-    let title = format!("{workspace}: {program} {what}");
-    notify_desktop(shared, tab.id, &title, &agent.message);
+    let (title, body) = desktop_text(&workspace, program, what, &agent.message);
+    notify_desktop(shared, tab.id, &title, &body, agent.state);
     let notice = Notice {
         workspace,
         what: format!("{program} {what}"),
@@ -1286,7 +1293,7 @@ fn size_notices(split: &gtk::Paned) {
 
 /// Tells the desktop about an agent that needs you, when no soi window is
 /// in front (otherwise the notifications under the agents do). Clicking it goes to the agent.
-fn notify_desktop(shared: &Shared, tab: Uuid, title: &str, body: &str) {
+fn notify_desktop(shared: &Shared, tab: Uuid, title: &str, body: &str, state: AgentState) {
     let windows = shared.windows();
     if !shared.settings.borrow().desktop_notifications()
         || windows.iter().any(|state| state.window.is_active())
@@ -1300,11 +1307,113 @@ fn notify_desktop(shared: &Shared, tab: Uuid, title: &str, body: &str) {
     if !body.is_empty() {
         notification.set_body(Some(body));
     }
+    // Without one, desktops fill the picture with whatever they find. A
+    // file, not a theme name: macOS has no icon themes.
+    if let Some(path) = state_icon(state) {
+        notification.set_icon(&gio::FileIcon::new(&gio::File::for_path(path)));
+    }
+    if state == AgentState::Input {
+        notification.set_priority(gio::NotificationPriority::High);
+    }
     notification.set_default_action_and_target_value(
         "app.focus-agent",
         Some(&tab.to_string().to_variant()),
     );
     app.send_notification(Some(&notification_id(tab)), &notification);
+}
+
+/// "Claude Code needs your input", and below it the workspace and what the
+/// agent said: "randy · Which file should I edit?".
+fn desktop_text(workspace: &str, program: &str, what: &str, message: &str) -> (String, String) {
+    let title = format!("{} {what}", agents::display_name(program));
+    let message = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    let body = match (workspace.is_empty(), message.is_empty()) {
+        (false, false) => format!("{workspace} · {message}"),
+        (false, true) => format!("In {workspace}"),
+        (true, _) => message,
+    };
+    (title, body)
+}
+
+/// A picture for the state: a colored disc with a white mark, drawn once
+/// into the cache directory.
+fn state_icon(state: AgentState) -> Option<PathBuf> {
+    // Bump the suffix when the drawing changes, so old files aren't reused.
+    let path = glib::user_cache_dir()
+        .join("soi")
+        .join(format!("{}-1.png", state.class()));
+    if !path.exists() {
+        fs::create_dir_all(path.parent()?).ok()?;
+        draw_state_icon(state)?.save_to_png(&path).ok()?;
+    }
+    Some(path)
+}
+
+fn draw_state_icon(state: AgentState) -> Option<gdk::Texture> {
+    const SIZE: i32 = 128;
+    let (r, g, b) = match state {
+        AgentState::Input => (0.89, 0.30, 0.27),
+        AgentState::Done => (0.26, 0.69, 0.40),
+        AgentState::Working => (0.25, 0.52, 0.89),
+        AgentState::Idle | AgentState::Exited => (0.47, 0.49, 0.53),
+    };
+    let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, SIZE, SIZE).ok()?;
+    {
+        let cr = cairo::Context::new(&surface).ok()?;
+        let c = SIZE as f64 / 2.0;
+        cr.arc(c, c, c - 4.0, 0.0, std::f64::consts::TAU);
+        cr.set_source_rgb(r, g, b);
+        cr.fill().ok()?;
+        cr.set_source_rgb(1.0, 1.0, 1.0);
+        cr.set_line_width(12.0);
+        cr.set_line_cap(cairo::LineCap::Round);
+        cr.set_line_join(cairo::LineJoin::Round);
+        match state {
+            // A check mark.
+            AgentState::Done => {
+                cr.move_to(38.0, 66.0);
+                cr.line_to(56.0, 84.0);
+                cr.line_to(90.0, 46.0);
+                cr.stroke().ok()?;
+            }
+            // Three dots: it waits for you.
+            AgentState::Input | AgentState::Working => {
+                for x in [40.0, 64.0, 88.0] {
+                    cr.arc(x, c, 9.0, 0.0, std::f64::consts::TAU);
+                    cr.fill().ok()?;
+                }
+            }
+            // A cross.
+            AgentState::Exited => {
+                cr.move_to(46.0, 46.0);
+                cr.line_to(82.0, 82.0);
+                cr.move_to(82.0, 46.0);
+                cr.line_to(46.0, 82.0);
+                cr.stroke().ok()?;
+            }
+            // A pause.
+            AgentState::Idle => {
+                for x in [52.0, 76.0] {
+                    cr.move_to(x, 44.0);
+                    cr.line_to(x, 84.0);
+                }
+                cr.stroke().ok()?;
+            }
+        }
+    }
+    surface.flush();
+    let stride = surface.stride() as usize;
+    let pixels = surface.data().ok()?.to_vec();
+    // Cairo's ARGB32, native-endian: B, G, R, A in memory on little-endian.
+    let format = if cfg!(target_endian = "little") {
+        gdk::MemoryFormat::B8g8r8a8Premultiplied
+    } else {
+        gdk::MemoryFormat::A8r8g8b8Premultiplied
+    };
+    Some(
+        gdk::MemoryTexture::new(SIZE, SIZE, format, &glib::Bytes::from_owned(pixels), stride)
+            .upcast(),
+    )
 }
 
 /// Removes an agent's desktop notification: you've seen it.
@@ -1622,6 +1731,25 @@ mod tests {
             Some(TaskStatus::Review)
         ));
         assert!(!matches_filters(0, 1, AgentState::Working, None));
+    }
+
+    #[test]
+    fn desktop_notifications_name_the_agent_then_the_workspace() {
+        assert_eq!(
+            desktop_text("randy", "claude", "is done", ""),
+            ("Claude Code is done".into(), "In randy".into())
+        );
+        assert_eq!(
+            desktop_text("api", "opencode", "needs your input", "Edit\n  main.rs?"),
+            (
+                "OpenCode needs your input".into(),
+                "api · Edit main.rs?".into()
+            )
+        );
+        assert_eq!(
+            desktop_text("", "aider", "exited", ""),
+            ("aider exited".into(), String::new())
+        );
     }
 
     #[test]
