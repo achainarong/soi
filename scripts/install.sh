@@ -100,7 +100,8 @@ EOF
 }
 
 install_macos() {
-    [ "$(uname -m)" = arm64 ] ||
+    # The hardware, not this shell: under Rosetta, uname -m says x86_64.
+    [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = 1 ] ||
         die "the macOS release is for Apple Silicon only; build from source on Intel (see the README)"
 
     say "downloading soi-macos-arm64.zip ($VERSION)"

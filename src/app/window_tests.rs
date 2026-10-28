@@ -1239,52 +1239,57 @@ fn restarts_without_typing_dont_pile_up_greetings() {
     });
 }
 
+/// Puts a "claude" first on the PATH, also for login shells (macOS), whose
+/// system PATH may have a real one (e.g. /opt/homebrew/bin) ahead of it. It
+/// says how it was started, then waits `seconds` as a process named claude:
+/// on macOS a script's process is named after its interpreter (/bin/sh runs
+/// bash). Call before anything reads the environment.
+fn fake_claude(seconds: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = home_dir().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let waiting = home_dir().join("agent");
+    fs::create_dir(&waiting).unwrap();
+    let sleep = ["/bin/sleep", "/usr/bin/sleep"]
+        .into_iter()
+        .find(|path| Path::new(path).exists())
+        .unwrap();
+    fs::copy(sleep, waiting.join("claude")).unwrap();
+    #[cfg(target_os = "macos")]
+    {
+        // A copied system binary only runs signed again.
+        let signed = std::process::Command::new("codesign")
+            .args(["--force", "--sign", "-"])
+            .arg(waiting.join("claude"))
+            .output()
+            .unwrap();
+        assert!(signed.status.success());
+    }
+    let claude = bin.join("claude");
+    fs::write(
+        &claude,
+        format!(
+            "#!/bin/sh\necho \"agent $*\"\nexec '{}' {seconds}\n",
+            waiting.join("claude").display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(
+        home_dir().join(".profile"),
+        format!("PATH=\"{}:$PATH\"\n", bin.display()),
+    )
+    .unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    // SAFETY: before any thread of this test process reads the environment.
+    unsafe { std::env::set_var("PATH", path) };
+}
+
 fn agents_resume_in_their_tabs_after_a_restart() {
     isolated("agents_resume_in_their_tabs_after_a_restart", || {
         use std::io::Write;
-        use std::os::unix::fs::PermissionsExt;
         // A "claude" that says how it was started, then quits after a while.
-        let bin = home_dir().join("bin");
-        fs::create_dir(&bin).unwrap();
-        let claude = bin.join("claude");
-        // It waits as a process named claude: on macOS a script's process
-        // is named after its interpreter (/bin/sh runs bash).
-        let waiting = home_dir().join("agent");
-        fs::create_dir(&waiting).unwrap();
-        let sleep = ["/bin/sleep", "/usr/bin/sleep"]
-            .into_iter()
-            .find(|path| Path::new(path).exists())
-            .unwrap();
-        fs::copy(sleep, waiting.join("claude")).unwrap();
-        #[cfg(target_os = "macos")]
-        {
-            // A copied system binary only runs signed again.
-            let signed = std::process::Command::new("codesign")
-                .args(["--force", "--sign", "-"])
-                .arg(waiting.join("claude"))
-                .output()
-                .unwrap();
-            assert!(signed.status.success());
-        }
-        fs::write(
-            &claude,
-            format!(
-                "#!/bin/sh\necho \"agent $*\"\nexec '{}' 2\n",
-                waiting.join("claude").display()
-            ),
-        )
-        .unwrap();
-        fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).unwrap();
-        // Also first for login shells (macOS), whose system PATH may have a
-        // real claude (e.g. /opt/homebrew/bin) ahead of this one.
-        fs::write(
-            home_dir().join(".profile"),
-            format!("PATH=\"{}:$PATH\"\n", bin.display()),
-        )
-        .unwrap();
-        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
-        // SAFETY: before any thread of this test process reads the environment.
-        unsafe { std::env::set_var("PATH", path) };
+        fake_claude(2);
         let (app, shared) = application();
         panel::listen(&shared);
         let window = new_window(&shared, None, true);
@@ -1330,15 +1335,7 @@ fn agents_that_never_say_their_session_continue_the_latest() {
     isolated(
         "agents_that_never_say_their_session_continue_the_latest",
         || {
-            use std::os::unix::fs::PermissionsExt;
-            let bin = home_dir().join("bin");
-            fs::create_dir(&bin).unwrap();
-            let claude = bin.join("claude");
-            fs::write(&claude, "#!/bin/sh\necho \"agent $*\"\nsleep 60\n").unwrap();
-            fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).unwrap();
-            let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
-            // SAFETY: before any thread of this test process reads the environment.
-            unsafe { std::env::set_var("PATH", path) };
+            fake_claude(60);
             let (app, shared) = application();
             let window = new_window(&shared, None, true);
             let pane = current_pane(&window).unwrap();
