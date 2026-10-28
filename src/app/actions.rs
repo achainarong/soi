@@ -56,6 +56,22 @@ pub(super) fn install_actions(state: &App) {
             });
         }
     });
+    add("ws-archive", |s, p| {
+        if let Ok(id) = Uuid::parse_str(p) {
+            let running = running_in(s, &workspace_panes(s, id));
+            let weak = Rc::downgrade(s);
+            let archive = move || {
+                if let Some(s) = weak.upgrade() {
+                    archive_workspace(&s, id);
+                }
+            };
+            if running.is_empty() {
+                archive();
+            } else {
+                confirm_close(s, "this workspace", running, archive);
+            }
+        }
+    });
     add("ws-remove-worktree", |s, p| {
         if let Ok(id) = Uuid::parse_str(p) {
             tasks::remove_worktree(s, id);

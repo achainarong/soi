@@ -294,6 +294,7 @@ pub(super) fn sidebar_menu(state: &App, item: Option<Item>) -> gio::Menu {
             );
             specific.append_submenu(Some("Move to"), &window_menu);
             specific.append(Some("Close workspace"), Some(&action("ws-close", &id)));
+            specific.append(Some("Archive"), Some(&action("ws-archive", &id)));
             if worktree_branch(state, workspace).is_some() {
                 specific.append(
                     Some("Remove worktree…"),

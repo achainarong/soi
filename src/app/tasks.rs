@@ -23,6 +23,7 @@ pub(super) fn connect(state: &App) {
         ("task-new", create as fn(&App)),
         ("task-context", task_view::open),
         ("task-history", history),
+        ("task-archive", archived),
         ("task-changes", changes::open),
         ("task-preview", preview::toggle),
     ] {

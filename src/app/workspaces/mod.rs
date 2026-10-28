@@ -1,9 +1,11 @@
-//! Workspaces: creating, showing, cycling, moving and closing them.
+//! Workspaces: creating, showing, cycling, moving, closing and archiving them.
 
 use super::*;
 
+mod archive;
 mod groups;
 
+pub(super) use archive::*;
 pub(super) use groups::*;
 
 pub(super) fn add_workspace_ui(state: &App, ws: &Workspace) {
@@ -276,21 +278,62 @@ pub(super) fn hand_over(from: &App, to: &App, widget: &gtk::Widget) {
 }
 
 pub(super) fn close_workspace(state: &App, id: Uuid) {
-    // To reopen it: its layout, and its tabs' output.
-    if let Some(ws) = workspace_snapshot(state, id) {
-        for pane in workspace_panes(state, id) {
-            if let Some(info) = state.panes.borrow().get(&pane) {
-                for tab in info.tabs.borrow().iter() {
-                    let output = tab.terminal.export(SAVED_LINES);
-                    if let Err(err) = session::scrollback::save(tab.id, &output) {
-                        crate::log::write(&format!("failed to save output: {err}"));
-                    }
-                }
-            }
-        }
+    if let Some(ws) = keep_workspace(state, id) {
         remember(&state.shared, Closed::Workspace(ws));
     }
     discard_workspace(state, id);
+}
+
+/// What's needed to bring a workspace back: its layout, and its tabs'
+/// output (saved now).
+fn keep_workspace(state: &App, id: Uuid) -> Option<Workspace> {
+    let ws = workspace_snapshot(state, id)?;
+    for pane in workspace_panes(state, id) {
+        if let Some(info) = state.panes.borrow().get(&pane) {
+            for tab in info.tabs.borrow().iter() {
+                let output = tab.terminal.export(SAVED_LINES);
+                if let Err(err) = session::scrollback::save(tab.id, &output) {
+                    crate::log::write(&format!("failed to save output: {err}"));
+                }
+            }
+        }
+    }
+    Some(ws)
+}
+
+/// Puts a workspace away for good, unlike closing it: it stays in the
+/// archive however much is closed after it. Its folders are left alone.
+pub(super) fn archive_workspace(state: &App, id: Uuid) {
+    if let Some(ws) = keep_workspace(state, id) {
+        record_task(&ws, "Archived");
+        state.shared.session.borrow_mut().archived.push(ws);
+        state.shared.session_dirty.set(true);
+    }
+    discard_workspace(state, id);
+}
+
+/// Brings an archived workspace back into this window's sidebar.
+pub(super) fn unarchive_workspace(state: &App, id: Uuid) {
+    let ws = {
+        let mut session = state.shared.session.borrow_mut();
+        let Some(index) = session.archived.iter().position(|ws| ws.id == id) else {
+            return;
+        };
+        session.archived.remove(index)
+    };
+    state.shared.session_dirty.set(true);
+    record_task(&ws, "Restored from the archive");
+    reopen_workspace(state, ws);
+}
+
+/// Notes `event` in the history of a task workspace's task, so it shows
+/// outside soi too.
+fn record_task(ws: &Workspace, event: &str) {
+    if let Some(task) = &ws.task
+        && let Err(e) = task.record(&[event.into()])
+    {
+        crate::log::write(&format!("failed to record task history: {e}"));
+    }
 }
 
 /// Closes a workspace for good: it can't be reopened (see `close_workspace`).

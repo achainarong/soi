@@ -22,6 +22,10 @@ pub struct Session {
     /// Tabs and workspaces closed lately, the last one last, to reopen.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub closed: Vec<Closed>,
+    /// Workspaces put away when done with them, the last one last: gone
+    /// from the sidebar, their folders (e.g. a task's worktree) kept.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub archived: Vec<Workspace>,
     /// Text size from zooming in or out, on top of the window scale;
     /// `None` is normal size.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -203,15 +207,17 @@ impl Session {
     pub fn restored() -> Self {
         let session = Self::load();
         let closed = session.closed.clone();
+        let archived = session.archived.clone();
         let zoom = session.zoom;
         Self {
             closed,
+            archived,
             zoom,
             ..Self::new(session.into_windows())
         }
     }
 
-    /// Every tab of every context, open or closed.
+    /// Every tab of every context, open, closed or archived.
     pub fn tab_ids(&self) -> HashSet<Uuid> {
         let mut ids = HashSet::new();
         for window in &self.windows {
@@ -233,6 +239,9 @@ impl Session {
                 }
                 Closed::Workspace(ws) => ws.layout.tab_ids(&mut ids),
             }
+        }
+        for ws in &self.archived {
+            ws.layout.tab_ids(&mut ids);
         }
         ids
     }

@@ -97,6 +97,7 @@ pub(super) fn new_window(shared: &Rc<Shared>, session: Option<&WindowSession>, f
         ("New task worktree…", "win.task-new"),
         ("Task details…", "win.task-context"),
         ("Session history…", "win.task-history"),
+        ("Archived workspaces…", "win.task-archive"),
         ("Inspect changes…", "win.task-changes"),
         ("Toggle plan preview", "win.task-preview"),
     ] {
