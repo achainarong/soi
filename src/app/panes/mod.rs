@@ -2,20 +2,17 @@
 
 use super::*;
 
-mod tab_drop;
 mod tabs;
 
-pub(super) use tab_drop::*;
 pub(super) use tabs::*;
 
-/// A pane with a tab for each directory, showing tab `active`. Tabs with
-/// an id from `ids` come back with their saved output.
+/// Builds a terminal pane. The initial directory and identity restore its
+/// terminal; an empty directory list leaves it ready for an explicit command.
 pub(super) fn new_pane(state: &App, tabs: &[PathBuf], ids: &[Uuid], active: usize) -> gtk::Box {
     let strip = gtk::Box::new(gtk::Orientation::Horizontal, 2);
-    strip.add_css_class("pane-tabs");
+    strip.add_css_class("pane-title");
     strip.set_hexpand(true);
     let hint = |label, id| shortcut_hint(&state.shared, label, id);
-    let new_tab_btn = header_button(&["list-add-symbolic"], &hint("New tab", "new-tab"));
     let search = header_button(&["edit-find-symbolic"], &hint("Search", "search"));
     let split_right = header_button(
         &["view-split-left-right-symbolic", "view-dual-symbolic"],
@@ -34,7 +31,7 @@ pub(super) fn new_pane(state: &App, tabs: &[PathBuf], ids: &[Uuid], active: usiz
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 2);
     header.add_css_class("pane-header");
     header.append(&strip);
-    header.append(&new_tab_btn);
+    // The workspace owns the only tab bar. Pane headers retain terminal titles.
     header.append(&search);
     header.append(&split_right);
     header.append(&split_down);
@@ -42,17 +39,10 @@ pub(super) fn new_pane(state: &App, tabs: &[PathBuf], ids: &[Uuid], active: usiz
     header.append(&close);
 
     let stack = gtk::Stack::builder().hexpand(true).vexpand(true).build();
-    let drop_hint = gtk::Box::builder()
-        .css_classes(["drop-hint"])
-        .can_target(false)
-        .visible(false)
-        .build();
-    let overlay = gtk::Overlay::builder().child(&stack).build();
-    overlay.add_overlay(&drop_hint);
     let pane = gtk::Box::new(gtk::Orientation::Vertical, 0);
     pane.add_css_class("pane");
     pane.append(&header);
-    pane.append(&overlay);
+    pane.append(&stack);
     state.panes.borrow_mut().insert(
         pane.clone(),
         Rc::new(Pane {
@@ -60,10 +50,8 @@ pub(super) fn new_pane(state: &App, tabs: &[PathBuf], ids: &[Uuid], active: usiz
             active: Cell::new(0),
             stack,
             strip,
-            drop_hint,
         }),
     );
-    install_tab_drop(state, &pane);
 
     let on_click = |button: &gtk::Button, f: fn(&App, &gtk::Box)| {
         let (shared, pane_ref) = (Rc::downgrade(&state.shared), pane.downgrade());
@@ -75,7 +63,6 @@ pub(super) fn new_pane(state: &App, tabs: &[PathBuf], ids: &[Uuid], active: usiz
             }
         });
     };
-    on_click(&new_tab_btn, |s, p| new_tab(s, p, None));
     on_click(&search, |s, p| {
         if let Some(terminal) = s.panes.borrow().get(p).and_then(|p| p.terminal()) {
             terminal.browse(true);
@@ -142,13 +129,10 @@ pub(super) fn running_in(state: &App, panes: &[gtk::Box]) -> Vec<String> {
 
 pub(super) fn workspace_panes(state: &App, id: Uuid) -> Vec<gtk::Box> {
     let mut panes = Vec::new();
-    if let Some(root) = state
-        .workspaces
-        .borrow()
-        .get(&id)
-        .and_then(|ws| ws.layout.first_child())
-    {
-        collect_panes(&root, &mut panes);
+    if let Some(ws) = state.workspaces.borrow().get(&id) {
+        for tab in ws.tabs.borrow().iter() {
+            panes.extend(tab_panes(tab));
+        }
     }
     panes
 }
@@ -214,11 +198,12 @@ pub(super) fn header_button(icons: &[&str], tooltip: &str) -> gtk::Button {
 /// The current directory of the workspace's focused terminal, or its first
 /// one; the project directory while it has none.
 pub(super) fn workspace_cwd(state: &App, ws: &WorkspaceUi) -> PathBuf {
-    let pane = ws
+    let tab = ws.current_tab();
+    let pane = tab
         .last_focus
         .upgrade()
-        .filter(|pane| pane.is_ancestor(&ws.holder))
-        .or_else(|| first_pane(&ws.layout.first_child()?));
+        .filter(|pane| pane.is_ancestor(&tab.layout))
+        .or_else(|| first_pane(&tab.layout.first_child()?));
     let panes = state.panes.borrow();
     pane.and_then(|pane| panes.get(&pane).cloned())
         .map(|pane| pane_cwd(&pane))
@@ -343,6 +328,13 @@ pub(super) fn close_pane(state: &App, pane: &gtk::Box) {
     if state.closing.get() || !state.panes.borrow().contains_key(pane) {
         return;
     }
+    if let Some((id, ws)) = workspace_of(state, pane)
+        && let Some(tab) = main_tab_of(&ws, pane)
+        && tab_panes(&tab).len() == 1
+    {
+        close_main_tab(state, id, tab.id);
+        return;
+    }
     unzoom_around(state, pane);
     if let Some(info) = state.panes.borrow_mut().remove(pane) {
         for tab in info.tabs.borrow().iter() {
@@ -420,8 +412,19 @@ pub(super) fn set_focused(state: &App, pane: &gtk::Box) {
     }
     pane.add_css_class("focused");
     state.focused.set(Some(pane));
-    if let Some((_, ws)) = workspace_of(state, pane) {
-        ws.last_focus.set(Some(pane));
+    if let Some((_, ws)) = workspace_of(state, pane)
+        && let Some(tab) = main_tab_of(&ws, pane)
+    {
+        tab.last_focus.set(Some(pane));
+        if let Some(terminal) = state
+            .panes
+            .borrow()
+            .get(pane)
+            .and_then(|info| info.current())
+        {
+            tab.name.replace(terminal.title.text().to_string());
+            refresh_main_tabs(&ws);
+        }
     }
 }
 
@@ -435,10 +438,11 @@ pub(super) fn focus_pane(state: &App, pane: &gtk::Box) {
 /// The focused pane of the active workspace.
 pub(super) fn current_pane(state: &App) -> Option<gtk::Box> {
     let ws = active_workspace(state)?;
-    ws.last_focus
+    let tab = ws.current_tab();
+    tab.last_focus
         .upgrade()
-        .filter(|pane| pane.is_ancestor(&ws.holder))
-        .or_else(|| first_pane(&ws.layout.first_child()?))
+        .filter(|pane| pane.is_ancestor(&tab.layout))
+        .or_else(|| first_pane(&tab.layout.first_child()?))
 }
 
 pub(super) fn current_terminal(state: &App) -> Option<TermView> {
@@ -452,10 +456,11 @@ pub(super) fn move_focus(state: &App, dir: Dir) {
     let (Some(ws), Some(current)) = (active_workspace(state), current_pane(state)) else {
         return;
     };
-    let Some(root) = ws.layout.first_child() else {
+    let tab = ws.current_tab();
+    let Some(root) = tab.layout.first_child() else {
         return;
     };
-    if ws.zoomed.upgrade().is_some() {
+    if tab.zoomed.upgrade().is_some() {
         // The hidden panes have no place yet: look once they're laid out.
         unzoom(&ws);
         let weak = Rc::downgrade(state);
@@ -504,8 +509,11 @@ pub(super) fn zoom_pane(state: &App, pane: &gtk::Box) {
     let Some((_, ws)) = workspace_of(state, pane) else {
         return;
     };
-    let was = ws.zoomed.upgrade();
-    unzoom(&ws);
+    let Some(tab) = main_tab_of(&ws, pane) else {
+        return;
+    };
+    let was = tab.zoomed.upgrade();
+    unzoom_tab(&tab);
     if was.as_ref() == Some(pane) {
         focus_pane(state, pane);
         return;
@@ -528,27 +536,33 @@ pub(super) fn zoom_pane(state: &App, pane: &gtk::Box) {
     }
     if hid {
         pane.add_css_class("zoomed");
-        ws.zoomed.set(Some(pane));
+        tab.zoomed.set(Some(pane));
     }
     focus_pane(state, pane);
 }
 
-/// Shows every pane of the workspace again.
+/// Shows every pane of the selected main tab again.
 pub(super) fn unzoom(ws: &WorkspaceUi) {
-    let Some(pane) = ws.zoomed.upgrade() else {
+    unzoom_tab(&ws.current_tab());
+}
+
+fn unzoom_tab(tab: &MainTabUi) {
+    let Some(pane) = tab.zoomed.upgrade() else {
         return;
     };
-    ws.zoomed.set(None);
+    tab.zoomed.set(None);
     pane.remove_css_class("zoomed");
-    if let Some(root) = ws.layout.first_child() {
+    if let Some(root) = tab.layout.first_child() {
         show_all(&root);
     }
 }
 
 /// Unzooms the workspace of `pane`, before its layout changes.
 pub(super) fn unzoom_around(state: &App, pane: &gtk::Box) {
-    if let Some((_, ws)) = workspace_of(state, pane) {
-        unzoom(&ws);
+    if let Some((_, ws)) = workspace_of(state, pane)
+        && let Some(tab) = main_tab_of(&ws, pane)
+    {
+        unzoom_tab(&tab);
     }
 }
 
@@ -593,32 +607,35 @@ pub(super) fn move_divider(state: &App, dir: Dir) {
     }
 }
 
-/// Turns typing into every pane of the active workspace at once on or off.
+/// Turns typing into every pane of the selected main tab at once on or off.
 pub(super) fn toggle_broadcast(state: &App) {
     let Some(ws) = active_workspace(state) else {
         return;
     };
-    let on = !ws.broadcast.get();
-    ws.broadcast.set(on);
+    let tab = ws.current_tab();
+    let on = !tab.broadcast.get();
+    tab.broadcast.set(on);
     if on {
-        ws.holder.add_css_class("broadcast");
+        tab.layout.add_css_class("broadcast");
     } else {
-        ws.holder.remove_css_class("broadcast");
+        tab.layout.remove_css_class("broadcast");
     }
 }
 
-/// Types what was typed into `from` into the shown tab of the workspace's
-/// other panes, when that's on.
+/// Mirrors input only to other panes of the selected main tab.
 pub(super) fn mirror_input(state: &App, from: &Tab, input: &Input) {
-    let Some((id, ws)) = workspace_of(state, from.terminal.widget()) else {
+    let Some((_, ws)) = workspace_of(state, from.terminal.widget()) else {
         return;
     };
-    if !ws.broadcast.get() {
+    let Some(tab) = main_tab_of(&ws, from.terminal.widget()) else {
+        return;
+    };
+    if tab.id != ws.current_tab().id || !tab.broadcast.get() {
         return;
     }
     let terminals: Vec<TermView> = {
         let panes = state.panes.borrow();
-        workspace_panes(state, id)
+        tab_panes(&tab)
             .iter()
             .filter_map(|pane| panes.get(pane)?.terminal())
             .filter(|terminal| terminal.widget() != from.terminal.widget())

@@ -1,6 +1,6 @@
 //! The persisted session: open and closed window contexts, each with its sidebar
-//! (workspaces, optionally grouped), and each workspace's split layout of
-//! panes with their tabs.
+//! (workspaces, optionally grouped), and each workspace's ordered main tabs,
+//! each with an independent split layout of terminal panes.
 
 use std::collections::HashSet;
 use std::fs;
@@ -37,6 +37,7 @@ pub struct Session {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Closed {
     Tab { id: Uuid, cwd: PathBuf },
+    MainTab(WorkspaceTab),
     Workspace(Workspace),
 }
 
@@ -116,9 +117,20 @@ pub struct Workspace {
     pub name: String,
     /// Project directory; shown in the sidebar and used as fallback cwd.
     pub root_dir: PathBuf,
-    pub layout: Layout,
+    pub tabs: Vec<WorkspaceTab>,
+    pub active_tab: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<Box<crate::tasks::TaskContext>>,
+}
+
+/// A main workspace tab and its independent split layout.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkspaceTab {
+    pub id: Uuid,
+    pub name: String,
+    pub layout: Layout,
+    #[serde(default)]
+    pub focused_pane: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -192,6 +204,12 @@ impl Layout {
 }
 
 impl Workspace {
+    fn tab_ids(&self, out: &mut HashSet<Uuid>) {
+        for tab in &self.tabs {
+            tab.layout.tab_ids(out);
+        }
+    }
+
     pub fn new(root_dir: PathBuf) -> Self {
         let name = root_dir
             .file_name()
@@ -200,7 +218,13 @@ impl Workspace {
         Self {
             id: Uuid::new_v4(),
             name,
-            layout: Layout::pane(root_dir.clone()),
+            tabs: vec![WorkspaceTab {
+                id: Uuid::new_v4(),
+                name: "Terminal".into(),
+                layout: Layout::pane(root_dir.clone()),
+                focused_pane: 0,
+            }],
+            active_tab: 0,
             root_dir,
             task: None,
         }
@@ -235,10 +259,10 @@ impl Session {
         for window in &self.windows {
             for entry in &window.sidebar {
                 match entry {
-                    Entry::Workspace(ws) => ws.layout.tab_ids(&mut ids),
+                    Entry::Workspace(ws) => ws.tab_ids(&mut ids),
                     Entry::Group(group) => {
                         for ws in &group.workspaces {
-                            ws.layout.tab_ids(&mut ids);
+                            ws.tab_ids(&mut ids);
                         }
                     }
                 }
@@ -249,11 +273,12 @@ impl Session {
                 Closed::Tab { id, .. } => {
                     ids.insert(*id);
                 }
-                Closed::Workspace(ws) => ws.layout.tab_ids(&mut ids),
+                Closed::MainTab(tab) => tab.layout.tab_ids(&mut ids),
+                Closed::Workspace(ws) => ws.tab_ids(&mut ids),
             }
         }
         for ws in &self.archived {
-            ws.layout.tab_ids(&mut ids);
+            ws.tab_ids(&mut ids);
         }
         ids
     }
@@ -471,7 +496,7 @@ mod tests {
     #[test]
     fn updates_keep_closed_contexts_and_round_trip_their_full_layouts() {
         let mut workspace = Workspace::new(PathBuf::from("/project"));
-        workspace.layout = Layout::Split {
+        workspace.tabs[0].layout = Layout::Split {
             orientation: Orientation::Horizontal,
             ratio: 0.37,
             start: Box::new(Layout::Pane {
@@ -599,29 +624,13 @@ mod tests {
     }
 
     #[test]
-    fn reads_sessions_from_before_windows_and_tabs() {
+    fn rejects_sessions_from_before_workspace_tabs() {
         let old = r#"{"sidebar":[{"kind":"workspace","id":"22222222-2222-2222-2222-222222222222",
             "name":"soi","root_dir":"/tmp","layout":{"type":"pane","cwd":"/tmp"}}],
             "active":"22222222-2222-2222-2222-222222222222"}"#;
-        let windows = serde_json::from_str::<Session>(old).unwrap().into_windows();
-        assert_eq!(windows.len(), 1);
-        assert!(!windows[0].id.is_nil());
-        assert!(!windows[0].closed);
-        assert!(windows[0].active.is_some());
-        let Entry::Workspace(ws) = &windows[0].sidebar[0] else {
-            panic!()
-        };
-        let Layout::Pane { tabs, active, .. } = &ws.layout else {
-            panic!()
-        };
-        assert!(tabs.is_empty() && *active == 0);
-
-        // Saved again, it's in the new format only.
-        let json = serde_json::to_string(&Session {
-            windows,
-            ..Default::default()
-        })
-        .unwrap();
-        assert!(json.starts_with(r#"{"windows":"#) && !json.contains(r#""tabs""#));
+        assert!(
+            serde_json::from_str::<Session>(old).is_err(),
+            "workspace tabs start a new session format"
+        );
     }
 }
