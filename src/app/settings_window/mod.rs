@@ -293,7 +293,7 @@ pub(super) fn open_settings(state: &App) {
         return;
     }
     let window = gtk::Window::builder()
-        .title("soi settings")
+        .title("Soi Settings")
         .css_classes(["soi-settings"])
         .transient_for(&state.window)
         .destroy_with_parent(true)

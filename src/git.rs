@@ -614,7 +614,7 @@ mod tests {
                 changes: 0,
                 unmerged: 0
             },
-            "soi's plan is not a change"
+            "Soi's plan is not a change"
         );
         std::fs::write(worktree.join("new.txt"), "work").unwrap();
         commit(&worktree);

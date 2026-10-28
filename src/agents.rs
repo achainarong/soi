@@ -798,7 +798,7 @@ pub fn install_opencode_plugin() -> Result<(), String> {
         && !existing.lines().next().unwrap_or("").contains(MARKER)
     {
         return Err(format!(
-            "{} exists and wasn't written by soi; left it unchanged",
+            "{} exists and wasn't written by Soi; left it unchanged",
             path.display()
         ));
     }
@@ -910,7 +910,7 @@ pub fn install_pi_extension() -> Result<(), String> {
         && !existing.lines().next().unwrap_or("").contains(MARKER)
     {
         return Err(format!(
-            "{} exists and wasn't written by soi; left it unchanged",
+            "{} exists and wasn't written by Soi; left it unchanged",
             path.display()
         ));
     }

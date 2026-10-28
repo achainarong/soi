@@ -25,7 +25,7 @@ pub(in crate::app) fn shortcuts_page(state: &App) -> gtk::Widget {
         .any(|b| state.shared.keybindings.borrow().is_changed(b.id));
     reset_all.set_sensitive(any_changed);
     reset_all.set_tooltip_text(Some(if any_changed {
-        "Put every shortcut back to how soi ships"
+        "Put every shortcut back to how Soi ships"
     } else {
         "All shortcuts are at their defaults"
     }));

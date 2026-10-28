@@ -445,7 +445,7 @@ impl TaskContext {
         }
         crate::plan::save(&path, &text, existing.as_deref()).map_err(|e| match e {
             crate::plan::SaveError::Conflict(_) => {
-                format!("{} changed while soi wrote it", path.display())
+                format!("{} changed while Soi wrote it", path.display())
             }
             crate::plan::SaveError::Failed(e) => e,
         })

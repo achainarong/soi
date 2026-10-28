@@ -566,7 +566,7 @@ pub(super) fn create(state: &App, group: Option<Uuid>) {
                     }
                     dialog.close();
                 }
-                Err(e) => error.set_label(&format!("{e}\nIf Git partially created a worktree, inspect it before retrying; soi will not delete it.")),
+                Err(e) => error.set_label(&format!("{e}\nIf Git partially created a worktree, inspect it before retrying; Soi will not delete it.")),
             }
         });
     });

@@ -160,7 +160,7 @@ pub(super) fn build(shown: bool, width: i32) -> AgentsUi {
     // Which soi this is, faint in the bottom right corner.
     panel.append(
         &gtk::Label::builder()
-            .label(concat!("soi ", env!("CARGO_PKG_VERSION")))
+            .label(concat!("Soi ", env!("CARGO_PKG_VERSION")))
             .xalign(1.0)
             .margin_end(8)
             .margin_bottom(8)
@@ -1335,7 +1335,7 @@ pub(super) fn settings_page(state: &App) -> gtk::Widget {
     page.append(&list);
 
     let notify = gtk::CheckButton::builder()
-        .label("Desktop notifications when soi isn't in front")
+        .label("Desktop notifications when Soi isn't in front")
         .active(state.shared.settings.borrow().desktop_notifications())
         .build();
     let weak = Rc::downgrade(state);
@@ -1392,8 +1392,8 @@ pub(super) fn settings_page(state: &App) -> gtk::Widget {
     page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     page.append(&text("Exact states", &["soi-section"]));
     page.append(&text(
-        "Without help, soi sees whether an agent is busy or quiet. With these, \
-         Claude Code, OpenCode and Pi tell soi when they need your input and when they're done.",
+        "Without help, Soi sees whether an agent is busy or quiet. With these, \
+         Claude Code, OpenCode and Pi tell Soi when they need your input and when they're done.",
         &["dim-label", "caption"],
     ));
     page.append(&integration_row(
@@ -1419,7 +1419,7 @@ pub(super) fn settings_page(state: &App) -> gtk::Widget {
         Integration {
             name: "OpenCode",
             description: format!(
-                "Writes a small plugin to {} that tells soi what OpenCode is doing.",
+                "Writes a small plugin to {} that tells Soi what OpenCode is doing.",
                 tilde(&agents::opencode_plugin_path())
             ),
             preview: format!(
@@ -1436,11 +1436,11 @@ pub(super) fn settings_page(state: &App) -> gtk::Widget {
         Integration {
             name: "Pi",
             description: format!(
-                "Writes a small extension to {} that tells soi what Pi is doing.",
+                "Writes a small extension to {} that tells Soi what Pi is doing.",
                 tilde(&agents::pi_extension_path())
             ),
             preview: format!(
-                "Writes {}: an extension that sends Pi's run, prompt and error events to soi.",
+                "Writes {}: an extension that sends Pi's run, prompt and error events to Soi.",
                 tilde(&agents::pi_extension_path())
             ),
             installed: agents::pi_extension_installed,
@@ -1448,7 +1448,7 @@ pub(super) fn settings_page(state: &App) -> gtk::Widget {
         },
     ));
     page.append(&text(
-        "Restart running agents afterwards. Outside soi, the hooks, the plugin and the extension do nothing.",
+        "Restart running agents afterwards. Outside Soi, the hooks, the plugin and the extension do nothing.",
         &["dim-label", "caption"],
     ));
     page.upcast()
@@ -1502,7 +1502,7 @@ fn integration_row(state: &App, integration: Integration) -> gtk::Widget {
             .and_downcast::<gtk::Window>()
             .unwrap_or_else(|| state.window.clone().upcast());
         let confirm = gtk::AlertDialog::builder()
-            .message(format!("Set up {name} for soi?"))
+            .message(format!("Set up {name} for Soi?"))
             .detail(&preview)
             .buttons(["Cancel", "Set up"])
             .cancel_button(0)
@@ -1517,7 +1517,7 @@ fn integration_row(state: &App, integration: Integration) -> gtk::Widget {
             }
             let dialog = match install() {
                 Ok(()) => gtk::AlertDialog::builder()
-                    .message(format!("{name} now reports to soi"))
+                    .message(format!("{name} now reports to Soi"))
                     .detail("Agents started from now on show exact states. Restart running ones.")
                     .build(),
                 Err(err) => gtk::AlertDialog::builder()
