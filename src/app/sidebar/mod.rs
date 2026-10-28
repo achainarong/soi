@@ -377,9 +377,28 @@ pub(super) fn show_popover(
 ) {
     popover.set_parent(parent);
     popover.set_pointing_to(Some(&at));
-    popover.connect_closed(|popover| {
+    // GtkStack only removes its own pages during disposal. An animated
+    // popover still attached when the window closes can make that loop spin
+    // forever. Detach before parent disposal, not just after the close idle.
+    let weak_popover = popover.downgrade();
+    let unrealize = parent.connect_unrealize(move |_| {
+        if let Some(popover) = weak_popover.upgrade() {
+            popover.unparent();
+        }
+    });
+    let unrealize = Rc::new(RefCell::new(Some(unrealize)));
+    let weak_parent = parent.upcast_ref::<gtk::Widget>().downgrade();
+    popover.connect_closed(move |popover| {
         let popover = popover.clone();
-        glib::idle_add_local_once(move || popover.unparent());
+        let (parent, unrealize) = (weak_parent.clone(), unrealize.clone());
+        glib::idle_add_local_once(move || {
+            if let (Some(parent), Some(handler)) = (parent.upgrade(), unrealize.take()) {
+                parent.disconnect(handler);
+            }
+            if popover.parent().is_some() {
+                popover.unparent();
+            }
+        });
     });
     popover.popup();
 }

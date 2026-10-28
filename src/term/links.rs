@@ -50,20 +50,39 @@ pub fn find_url(chars: &[char], at: usize) -> Option<(usize, usize)> {
 
     // Leave out punctuation that ends a sentence, and closing brackets
     // that belong to the surrounding text.
+    // Count once: recounting for each trailing bracket is quadratic on
+    // untrusted output and runs while the pointer moves over the terminal.
+    let (mut round, mut square) = (0i64, 0i64);
+    for c in &chars[url_start..end] {
+        match c {
+            '(' => round += 1,
+            ')' => round -= 1,
+            '[' => square += 1,
+            ']' => square -= 1,
+            _ => {}
+        }
+    }
     let mut url_end = end;
     while url_end > url_start {
-        let url = &chars[url_start..url_end];
-        let count = |c: char| url.iter().filter(|&&x| x == c).count();
-        let unbalanced = |open: char, close: char| count(close) > count(open);
         match chars[url_end - 1] {
             '.' | ',' | ':' | ';' | '!' | '?' | '\'' => url_end -= 1,
-            ')' if unbalanced('(', ')') => url_end -= 1,
-            ']' if unbalanced('[', ']') => url_end -= 1,
+            ')' if round < 0 => {
+                round += 1;
+                url_end -= 1;
+            }
+            ']' if square < 0 => {
+                square += 1;
+                url_end -= 1;
+            }
             _ => break,
         }
     }
     let long_enough = url_end - url_start > scheme.chars().count();
-    let fits = url_end - url_start <= MAX_URL_LEN;
+    let fits = chars[url_start..url_end]
+        .iter()
+        .map(|c| c.len_utf8())
+        .sum::<usize>()
+        <= MAX_URL_LEN;
     (long_enough && fits && (url_start..url_end).contains(&at)).then_some((url_start, url_end))
 }
 
@@ -173,6 +192,25 @@ mod tests {
         assert_eq!(url_in(text, 45).as_deref(), Some("http://x.io/p?q=1"));
         assert_eq!(url_in("plain words", 3), None);
         assert_eq!(url_in("https://", 2), None, "a scheme alone is no link");
+    }
+
+    #[test]
+    fn url_lengths_use_bytes_and_trim_surrounding_brackets() {
+        let short = "https://example.com/é";
+        assert_eq!(url_in(short, 10).as_deref(), Some(short));
+        assert!(check(short).is_ok());
+        let text = format!("https://example.com/{}", "é".repeat(MAX_URL_LEN / 2));
+        assert!(url_in(&text, 10).is_none(), "must match check's byte limit");
+        assert_eq!(
+            url_in("(https://example.com/a_(b))])", 10).as_deref(),
+            Some("https://example.com/a_(b)")
+        );
+    }
+
+    #[test]
+    fn long_punctuation_suffix_is_trimmed() {
+        let text = format!("https://example.com/{}", ")".repeat(30_000));
+        assert_eq!(url_in(&text, 10).as_deref(), Some("https://example.com/"));
     }
 
     #[test]

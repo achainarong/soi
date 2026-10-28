@@ -12,11 +12,10 @@ use gtk::{gdk, gio, glib, graphene, pango};
 use uuid::Uuid;
 
 use crate::agents::{Agent, SessionMetadata};
+use crate::dirs::home_dir;
 use crate::keybindings::{self, BINDINGS, Keybindings};
 use crate::platform::Snap;
-use crate::session::{
-    self, Closed, Entry, Group, Layout, Session, WindowSession, Workspace, home_dir,
-};
+use crate::session::{self, Closed, Entry, Group, Layout, Session, WindowSession, Workspace};
 use crate::settings::{self, Settings};
 use crate::term::{Input, Progress, TermView};
 use crate::theme::{self, TerminalTheme};
@@ -39,10 +38,16 @@ mod workspace_tabs;
 mod workspaces;
 
 #[cfg(feature = "gui-tests")]
+#[expect(clippy::unwrap_used, reason = "a failed check should panic")]
 mod css_tests;
 #[cfg(feature = "gui-tests")]
 pub(crate) mod gui_tests;
 #[cfg(feature = "gui-tests")]
+#[expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a failed check should panic"
+)]
 mod window_tests;
 
 use actions::*;
@@ -184,6 +189,7 @@ struct Shared {
     tabs: RefCell<HashMap<Uuid, Weak<Tab>>>,
     /// What the agents panels show now (see `panel::refresh`).
     agents_shown: RefCell<String>,
+    report_listener: RefCell<Option<panel::ReportListener>>,
     layout_drag: RefCell<layout_drag::LayoutDrag>,
 }
 
@@ -234,8 +240,13 @@ struct MainTabUi {
 }
 
 impl WorkspaceUi {
+    /// A workspace always has a tab: closing its last one adds a fresh one
+    /// (see `remove_main_tab_ui`). The index is clamped anyway, so a stale
+    /// `active_tab` shows the last tab rather than aborting the app.
     fn current_tab(&self) -> Rc<MainTabUi> {
-        self.tabs.borrow()[self.active_tab.get()].clone()
+        let tabs = self.tabs.borrow();
+        let last = tabs.len().saturating_sub(1);
+        tabs[self.active_tab.get().min(last)].clone()
     }
 }
 
@@ -313,6 +324,7 @@ pub fn run() -> glib::ExitCode {
     };
     let app = gtk::Application::builder().application_id(id).build();
     let shared: Rc<OnceCell<Rc<Shared>>> = Rc::default();
+    let shutdown = shared.clone();
     app.connect_activate(move |app| match shared.get() {
         // Started again while running (e.g. from the app menu).
         Some(shared) => reopen_last(shared),
@@ -322,7 +334,16 @@ pub fn run() -> glib::ExitCode {
             restore_windows(shared);
         }
     });
-    app.run()
+    let result = app.run();
+    // app.quit() bypasses window close requests. Save handlers have already
+    // run; release live PTYs and finish their reaping before Rust exits.
+    if let Some(shared) = shutdown.get() {
+        for window in shared.windows() {
+            release_terminals(&window);
+        }
+    }
+    crate::term::wait_for_shutdown();
+    result
 }
 
 /// Brings back the saved context used last or, with none saved, the window
@@ -369,6 +390,7 @@ fn init_shared(app: &gtk::Application) -> Rc<Shared> {
     // Matches the installed icon (`make install`), for windows and the
     // taskbar. Only possible once GTK is running, i.e. in here.
     gtk::Window::set_default_icon_name(APP_ID);
+    #[expect(clippy::expect_used, reason = "GTK started, so it has a display")]
     let display = gdk::Display::default().expect("no display");
     let provider = gtk::CssProvider::new();
     provider.load_from_string(CSS);
@@ -406,6 +428,7 @@ fn init_shared(app: &gtk::Application) -> Rc<Shared> {
         zoom: Cell::new(zoom),
         tabs: RefCell::default(),
         agents_shown: RefCell::default(),
+        report_listener: RefCell::default(),
         layout_drag: RefCell::default(),
     });
     // The terminals' font with the zoom and window scale, before any opens.

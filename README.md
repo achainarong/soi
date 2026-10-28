@@ -162,7 +162,7 @@ Settings ▸ Agents sets up Claude Code, OpenCode and Pi for a downloaded soi.
 
 ### Build from source
 
-You need Rust (1.88 or newer) and GTK 4.14 or newer with its development
+You need Rust (1.92 or newer) and GTK 4.14 or newer with its development
 files:
 
 ```sh
@@ -209,7 +209,7 @@ on the intended oldest system for older macOS releases. See
 | `make run`   | build and start it |
 | `make dev`   | start a debug build next to an installed soi, with its own layout |
 | `make test`  | run the tests |
-| `make test-gui` | run the 31 display-dependent GUI checks (requires a desktop and bash) |
+| `make test-gui` | run the display-dependent GUI checks (requires a desktop and bash) |
 | `make bundle` | macOS: build a relocatable app bundle without installing |
 | `make appimage` | Linux: build `target/soi-<arch>.AppImage` with GTK inside (downloads [linuxdeploy](https://github.com/linuxdeploy/linuxdeploy)) |
 

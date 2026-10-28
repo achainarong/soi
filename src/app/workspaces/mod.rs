@@ -94,7 +94,7 @@ pub(super) fn add_workspace_ui(state: &App, ws: &Workspace) {
         add_main_tab(state, ws.id, &tab);
     }
     ui.active_tab
-        .set(ws.active_tab.min(ui.tabs.borrow().len() - 1));
+        .set(ws.active_tab.min(ui.tabs.borrow().len().saturating_sub(1)));
     ui.tab_stack.set_visible_child(&ui.current_tab().layout);
     refresh_main_tabs(&ui);
     let (shared, holder, id) = (Rc::downgrade(&state.shared), ui.holder.downgrade(), ws.id);
@@ -242,6 +242,10 @@ pub(super) fn pick_project(state: &App, group: Option<Uuid>) {
 }
 
 /// A new workspace with a shell in the profile's start directory.
+#[expect(
+    clippy::expect_used,
+    reason = "an endless range always finds a free name"
+)]
 pub(super) fn new_terminal_workspace(state: &App, group: Option<Uuid>) {
     let mut ws = Workspace::new(state.shared.settings.borrow().start_dir());
     let taken: Vec<String> = state

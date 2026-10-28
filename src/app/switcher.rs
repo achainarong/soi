@@ -67,7 +67,7 @@ pub(super) fn open(state: &App) {
     let go = {
         let (shared, popover, choices, shown) = (
             Rc::downgrade(&state.shared),
-            popover.clone(),
+            popover.downgrade(),
             choices.clone(),
             shown.clone(),
         );
@@ -75,7 +75,9 @@ pub(super) fn open(state: &App) {
             let choice = index
                 .and_then(|i| shown.borrow().get(usize::try_from(i).ok()?).copied())
                 .map(|i| choices.borrow()[i].target.clone());
-            popover.popdown();
+            if let Some(popover) = popover.upgrade() {
+                popover.popdown();
+            }
             if let (Some(shared), Some(target)) = (shared.upgrade(), choice) {
                 go_to(&shared, target);
             }
@@ -87,8 +89,12 @@ pub(super) fn open(state: &App) {
     let rows = list.clone();
     entry.connect_activate(move |_| activate(rows.selected_row().map(|row| row.index())));
     list.connect_row_activated(move |_, row| go(Some(row.index())));
-    let popdown = popover.clone();
-    entry.connect_stop_search(move |_| popdown.popdown());
+    let popdown = popover.downgrade();
+    entry.connect_stop_search(move |_| {
+        if let Some(popover) = popdown.upgrade() {
+            popover.popdown();
+        }
+    });
     // Up and Down move through the list while typing.
     let keys = gtk::EventControllerKey::new();
     let (rows, view) = (list.clone(), scrolled.clone());

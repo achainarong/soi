@@ -137,6 +137,15 @@ impl Default for Control {
     }
 }
 
+/// A control value as `T`; 0 when it is missing, malformed or out of
+/// range, rather than wrapped into a valid-looking one.
+fn parse_number<T: std::str::FromStr + Default>(value: &[u8]) -> T {
+    std::str::from_utf8(value)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_default()
+}
+
 fn parse_control(text: &[u8]) -> Control {
     let mut control = Control::default();
     for pair in text.split(|b| *b == b',') {
@@ -144,27 +153,22 @@ fn parse_control(text: &[u8]) -> Control {
             continue;
         };
         let value = &pair[2..];
-        let number = || {
-            std::str::from_utf8(value)
-                .ok()
-                .and_then(|v| v.parse::<i64>().ok())
-                .unwrap_or(0)
-        };
+        let number = || parse_number::<i64>(value);
         let letter = value.first().copied().unwrap_or(0);
         match key {
             b'a' => control.action = letter,
-            b'f' => control.format = number() as u32,
+            b'f' => control.format = parse_number(value),
             b't' => control.medium = letter,
             b'o' => control.compressed = letter == b'z',
-            b's' => control.width = number() as u32,
-            b'v' => control.height = number() as u32,
-            b'i' => control.id = number() as u32,
+            b's' => control.width = parse_number(value),
+            b'v' => control.height = parse_number(value),
+            b'i' => control.id = parse_number(value),
             b'm' => control.more = number() == 1,
-            b'q' => control.quiet = number() as u32,
-            b'c' => control.cols = number() as u32,
-            b'r' => control.rows = number() as u32,
+            b'q' => control.quiet = parse_number(value),
+            b'c' => control.cols = parse_number(value),
+            b'r' => control.rows = parse_number(value),
             b'C' => control.no_cursor_move = number() == 1,
-            b'z' => control.z = number() as i32,
+            b'z' => control.z = parse_number(value),
             b'd' => control.delete = letter,
             b'S' => control.size = number().max(0) as usize,
             b'O' => control.offset = number().max(0) as usize,
@@ -652,6 +656,21 @@ mod tests {
         cell_px: (10.0, 20.0),
         alt: false,
     };
+
+    #[test]
+    fn out_of_range_control_numbers_are_invalid_not_wrapped() {
+        let control = parse_control(b"i=-1,s=4294967306,v=10,c=-2,z=4294967296");
+        assert_eq!(
+            (
+                control.id,
+                control.width,
+                control.height,
+                control.cols,
+                control.z
+            ),
+            (0, 0, 10, 0, 0)
+        );
+    }
 
     fn b64(data: &[u8]) -> String {
         base64::engine::general_purpose::STANDARD.encode(data)

@@ -8,7 +8,7 @@
 
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::theme::key_values;
 
@@ -91,11 +91,8 @@ pub fn valid_profile_name(name: &str) -> bool {
     !name.trim().is_empty() && name == name.trim() && !name.contains(['/', '\0']) && name != "."
 }
 
-fn write_file(path: &PathBuf, text: &str) -> io::Result<()> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    fs::write(path, text)
+fn write_file(path: &Path, text: &str) -> io::Result<()> {
+    crate::dirs::write_atomic(path, text.as_bytes(), 0o666)
 }
 
 /// `existing` with the given keys set (or removed, for `None`); comments and
@@ -227,6 +224,10 @@ pub fn delete_profile(name: &str) -> io::Result<()> {
 }
 
 /// `base`, or `base 2`, `base 3`, … — whichever doesn't exist yet.
+#[expect(
+    clippy::expect_used,
+    reason = "an endless range always finds a free name"
+)]
 pub fn unique_profile_name(base: &str) -> String {
     let existing = list_profiles();
     (1..)
@@ -347,7 +348,7 @@ impl Settings {
 
     /// The start directory if it exists, otherwise the home directory.
     pub fn start_dir(&self) -> PathBuf {
-        let home = crate::session::home_dir();
+        let home = crate::dirs::home_dir();
         self.start_dir
             .as_deref()
             .map(|dir| match dir.strip_prefix('~') {

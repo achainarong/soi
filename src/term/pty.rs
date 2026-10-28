@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -27,6 +27,27 @@ pub struct Pty {
 const MAX_INPUT_BYTES: usize = 4 * 1024 * 1024;
 const OUTPUT_QUEUE_SIZE: usize = 64;
 const IO_CHUNK_BYTES: usize = 64 * 1024;
+static REAPERS: AtomicUsize = AtomicUsize::new(0);
+
+struct Reaper;
+
+impl Drop for Reaper {
+    fn drop(&mut self) {
+        REAPERS.fetch_sub(1, Ordering::Release);
+    }
+}
+
+/// After all terminals have closed, let parallel reapers finish before the
+/// process exits. Otherwise a child ignoring SIGHUP outlives its supervisor.
+pub(crate) fn wait_for_shutdown() {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while REAPERS.load(Ordering::Acquire) != 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    if REAPERS.load(Ordering::Acquire) != 0 {
+        crate::log::write("terminal child cleanup exceeded the shutdown deadline");
+    }
+}
 
 #[derive(Default)]
 struct InputState {
@@ -43,6 +64,10 @@ struct InputQueue {
 }
 
 impl InputQueue {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "nothing panics while this lock is held, so it is never poisoned"
+    )]
     fn push(&self, bytes: &[u8]) -> io::Result<()> {
         let mut state = self.state.lock().unwrap();
         if state.closed {
@@ -59,6 +84,10 @@ impl InputQueue {
         Ok(())
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "nothing panics while this lock is held, so it is never poisoned"
+    )]
     fn take(&self) -> Option<Vec<u8>> {
         let mut state = self.state.lock().unwrap();
         while state.bytes.is_empty() && !state.closed {
@@ -71,6 +100,10 @@ impl InputQueue {
         Some(state.bytes.drain(..count).collect())
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "nothing panics while this lock is held, so it is never poisoned"
+    )]
     fn close(&self) {
         let mut state = self.state.lock().unwrap();
         state.closed = true;
@@ -195,7 +228,9 @@ pub fn spawn(
     let (sender, receiver) = async_channel::bounded(OUTPUT_QUEUE_SIZE);
     let reader_input = input.clone();
     let reader_stopped = stopped.clone();
+    REAPERS.fetch_add(1, Ordering::Relaxed);
     std::thread::spawn(move || {
+        let _reaper = Reaper;
         let mut buffer = vec![0u8; IO_CHUNK_BYTES];
         while !reader_stopped.load(Ordering::Relaxed) {
             match reader.read(&mut buffer) {
@@ -222,7 +257,28 @@ pub fn spawn(
         // terminal is drained or its master closed; close ours first.
         drop(reader);
         drop(read_fd);
-        let _ = child.wait();
+        let mut closing = None;
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) | Err(_) => break,
+                Ok(None) => {}
+            }
+            if reader_stopped.load(Ordering::Relaxed) {
+                let started = closing.get_or_insert_with(std::time::Instant::now);
+                if started.elapsed() >= std::time::Duration::from_millis(500) {
+                    if let Some(pid) = child.process_id() {
+                        // SAFETY: this worker still owns the unreaped child;
+                        // its PID cannot be reused before our wait completes.
+                        unsafe {
+                            libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                        }
+                    }
+                    let _ = child.wait();
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         reader_input.close();
         send_event(&sender, Event::Exited, &reader_stopped);
     });
@@ -276,6 +332,37 @@ impl Drop for Pty {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dropping_a_terminal_reaps_a_child_that_ignores_hangup() {
+        let argv = [
+            "/bin/sh",
+            "-c",
+            "trap '' HUP; printf ready; exec /bin/sleep 60",
+        ]
+        .map(String::from);
+        let (pty, events) = spawn(&argv, &std::env::temp_dir(), &[], test_size()).unwrap();
+        let pid = pty.pid.unwrap();
+        assert!(matches!(events.recv_blocking().unwrap(), Event::Output(_)));
+        drop(pty);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let path = format!("/proc/{pid}");
+        while Path::new(&path).exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let survived = Path::new(&path).exists();
+        if survived {
+            // Clean up only this test's child, still owned by the waiting worker.
+            unsafe {
+                libc::kill(pid as i32, libc::SIGKILL);
+            }
+        }
+        assert!(
+            !survived,
+            "closing retained a live child and its reaper thread"
+        );
+    }
 
     fn test_size() -> PtySize {
         PtySize {

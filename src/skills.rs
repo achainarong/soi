@@ -74,7 +74,7 @@ pub struct Item {
 /// The skills or commands available for work in `repository`, by name;
 /// where two share a name, the project's wins.
 pub fn discover(kind: Kind, repository: &Path) -> Vec<Item> {
-    discover_in(kind, &crate::session::home_dir(), repository)
+    discover_in(kind, &crate::dirs::home_dir(), repository)
 }
 
 pub fn discover_in(kind: Kind, home: &Path, repository: &Path) -> Vec<Item> {

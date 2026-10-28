@@ -9,6 +9,7 @@ mod markdown;
 mod plan;
 mod platform;
 mod presets;
+mod probe;
 mod session;
 mod settings;
 mod shell_integration;

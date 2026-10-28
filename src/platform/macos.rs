@@ -201,7 +201,7 @@ impl Platform for MacOs {
             PathBuf::from("/opt/homebrew/share"),
             PathBuf::from("/usr/local/share"),
             PathBuf::from("/").join(ghostty),
-            crate::session::home_dir().join(ghostty),
+            crate::dirs::home_dir().join(ghostty),
         ]
     }
 
@@ -258,7 +258,7 @@ impl Platform for MacOs {
     fn ghostty_config_dirs(&self) -> Vec<PathBuf> {
         vec![
             crate::dirs::config_home().join("ghostty"),
-            crate::session::home_dir().join("Library/Application Support/com.mitchellh.ghostty"),
+            crate::dirs::home_dir().join("Library/Application Support/com.mitchellh.ghostty"),
         ]
     }
 }

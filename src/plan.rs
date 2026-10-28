@@ -37,6 +37,11 @@ pub fn create(path: &Path, text: &str) -> Result<(), CreateError> {
     if !path.is_absolute() {
         return Err(CreateError::Failed("Plan paths must be absolute.".into()));
     }
+    if text.len() as u64 > LIMIT {
+        return Err(CreateError::Failed(
+            "Plan exceeds the 512 KiB limit.".into(),
+        ));
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| CreateError::Failed(format!("Cannot create {}: {e}", parent.display())))?;
@@ -153,6 +158,20 @@ mod tests {
         assert!(read(&path).unwrap_err().contains("limit"));
         fs::write(&path, "").unwrap();
         assert_eq!(read(&path).unwrap(), "");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn oversized_creation_leaves_no_file_or_directories() {
+        let root = dir();
+        let path = root.join("new/plan.md");
+        assert!(matches!(
+            create(&path, &"x".repeat(LIMIT as usize + 1)),
+            Err(CreateError::Failed(_))
+        ));
+        assert!(!path.parent().unwrap().exists());
+        create(&path, &"x".repeat(LIMIT as usize)).unwrap();
+        assert_eq!(read(&path).unwrap().len(), LIMIT as usize);
         fs::remove_dir_all(root).unwrap();
     }
 

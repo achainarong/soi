@@ -7,6 +7,9 @@ use super::screen::Term;
 /// A position: absolute line and column.
 pub type Pos = (i64, usize);
 
+/// The largest count prefix (`99999j`), so count arithmetic can't overflow.
+const MAX_COUNT: usize = 99_999;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
     Char(char),
@@ -195,10 +198,11 @@ impl Browse {
             (Some(_), _) => {} // unknown two-key command: drop it
 
             (None, Key::Char(c @ '1'..='9')) => {
-                self.count = Some(count.unwrap_or(0) * 10 + c.to_digit(10).unwrap_or(0) as usize);
+                let digit = c.to_digit(10).unwrap_or(0) as usize;
+                self.count = Some((count.unwrap_or(0) * 10 + digit).min(MAX_COUNT));
             }
             (None, Key::Char('0')) if count.is_some() => {
-                self.count = count.map(|n| n * 10);
+                self.count = count.map(|n| (n * 10).min(MAX_COUNT));
             }
             (None, Key::Char(c @ ('g' | 'y' | '[' | ']')))
                 if !(c == 'y' && self.visual.is_some()) =>
@@ -519,6 +523,17 @@ mod tests {
         assert_eq!(browse.cursor.0, 0);
         keys(&mut browse, &term, "2j");
         assert_eq!(browse.cursor.0, 2);
+    }
+
+    #[test]
+    fn huge_count_moves_to_the_edge_without_overflowing() {
+        let term = term("one\r\ntwo\r\nthree");
+        let mut browse = Browse::new(&term, 0, false);
+        keys(&mut browse, &term, &"9".repeat(30));
+        keys(&mut browse, &term, "j");
+        assert_eq!(browse.cursor.0, 4);
+        keys(&mut browse, &term, &format!("{}0k", "9".repeat(30)));
+        assert_eq!(browse.cursor.0, 0);
     }
 
     #[test]

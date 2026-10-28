@@ -736,6 +736,7 @@ impl Term {
     /// joined by autowrap become one line again, split at the new width.
     /// The cursor stays on the same character, and images and prompt marks
     /// move with their lines. The row count is left to `resize`.
+    #[expect(clippy::expect_used, reason = "rewrapping starts each line with a row")]
     fn reflow(&mut self, cols: usize) {
         let old_scrollback = self.scrollback.len();
         let first_abs = self.scrolled_off - old_scrollback as i64;
@@ -1729,7 +1730,8 @@ impl Perform for Term {
                 5 => self.respond("\x1b[0n"),
                 6 => {
                     let row = if self.cursor.origin {
-                        self.cursor.row - self.top
+                        // A restored cursor can sit above a region set later.
+                        self.cursor.row.saturating_sub(self.top)
                     } else {
                         self.cursor.row
                     };
@@ -2108,7 +2110,7 @@ impl Copy {
     fn parse(targets: &[u8], data: &[u8]) -> Option<Self> {
         use base64::Engine;
         use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
-        if data == b"?" || data.len() / 4 * 3 > MAX_CLIPBOARD_BYTES {
+        if data == b"?" || data.len() > MAX_CLIPBOARD_BYTES.div_ceil(3) * 4 {
             return None;
         }
         let engine = GeneralPurpose::new(
@@ -2116,6 +2118,9 @@ impl Copy {
             GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
         );
         let text = String::from_utf8(engine.decode(data).ok()?).ok()?;
+        if text.len() > MAX_CLIPBOARD_BYTES || text.contains('\0') {
+            return None;
+        }
         // No targets means the clipboard; `s` (selection) is it too.
         let primary = targets.contains(&b'p');
         let clipboard = targets.is_empty() || targets.iter().any(|t| matches!(t, b'c' | b's'));
@@ -2480,6 +2485,13 @@ mod tests {
     fn answers_cursor_position_query() {
         let mut term = run(10, 5, "\x1b[3;4H\x1b[6n");
         assert_eq!(term.take_responses(), b"\x1b[3;4R");
+    }
+
+    #[test]
+    fn cursor_query_above_origin_region_reports_its_top() {
+        // Origin mode, save at row 1, set a lower region, restore above it.
+        let mut term = run(10, 12, "\x1b[?6h\x1b7\x1b[5;10r\x1b8\x1b[6n");
+        assert_eq!(term.take_responses(), b"\x1b[1;1R");
     }
 
     #[test]

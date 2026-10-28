@@ -37,11 +37,13 @@ impl TerminalTheme {
             && self.opacity.is_none()
     }
 
+    #[expect(clippy::expect_used, reason = "a constant color")]
     pub fn foreground(&self) -> gdk::RGBA {
         self.foreground
             .unwrap_or_else(|| gdk::RGBA::parse("#d0d0d0").expect("valid color"))
     }
 
+    #[expect(clippy::expect_used, reason = "a constant color")]
     pub fn background(&self) -> gdk::RGBA {
         self.background
             .unwrap_or_else(|| gdk::RGBA::parse("#1e1e1e").expect("valid color"))
@@ -206,6 +208,7 @@ fn parse_color(value: &str) -> Option<gdk::RGBA> {
         .ok()
 }
 
+#[expect(clippy::expect_used, reason = "constant colors")]
 fn xterm_color(i: usize) -> gdk::RGBA {
     const XTERM: [&str; 16] = [
         "#000000", "#cd0000", "#00cd00", "#cdcd00", "#0000ee", "#cd00cd", "#00cdcd", "#e5e5e5",

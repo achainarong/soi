@@ -185,9 +185,12 @@ pub fn worktree_ignore_warning(
     let path = relative
         .to_str()
         .ok_or("The worktree path must be valid UTF-8")?;
+    // check-ignore rejects pathspec magic (even `literal`); `./` keeps a
+    // filename beginning with ':' from being interpreted as magic.
+    let path = format!("./{path}");
     let result = output(
         repository,
-        &["check-ignore", "--quiet", "--no-index", "--", path],
+        &["check-ignore", "--quiet", "--no-index", "--", &path],
     )?;
     match result.status.code() {
         Some(0) => Ok(None),
@@ -320,15 +323,30 @@ pub fn visibility(worktree: &Path, file: &Path) -> Result<Visibility, String> {
     let path = relative
         .to_str()
         .ok_or("The plan path must be valid UTF-8")?;
-    if output(&root, &["ls-files", "--error-unmatch", "--", path])?
-        .status
-        .success()
+    if output(
+        &root,
+        &[
+            "--literal-pathspecs",
+            "ls-files",
+            "--error-unmatch",
+            "--",
+            path,
+        ],
+    )?
+    .status
+    .success()
     {
         return Ok(Visibility::Tracked);
     }
     let result = output(
         &root,
-        &["check-ignore", "--quiet", "--no-index", "--", path],
+        &[
+            "check-ignore",
+            "--quiet",
+            "--no-index",
+            "--",
+            &format!("./{path}"),
+        ],
     )?;
     match result.status.code() {
         Some(0) => Ok(Visibility::Ignored),
@@ -437,6 +455,39 @@ pub fn changes(directory: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn visibility_treats_filenames_as_literal_paths() {
+        let root = std::env::temp_dir().join(format!("soi-git-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        run(&root, &["init"]).unwrap();
+        std::fs::write(root.join("plan1.md"), "tracked").unwrap();
+        run(&root, &["add", "plan1.md"]).unwrap();
+        for name in ["plan*.md", "plan[1].md", ":(glob)*.md"] {
+            std::fs::write(root.join(name), "untracked").unwrap();
+            assert_eq!(
+                visibility(&root, &root.join(name)).unwrap(),
+                Visibility::Untracked,
+                "{name}"
+            );
+            assert!(
+                worktree_ignore_warning(&root, &root.join(name))
+                    .unwrap()
+                    .is_some()
+            );
+            run(&root, &["--literal-pathspecs", "add", "--", name]).unwrap();
+            assert_eq!(
+                visibility(&root, &root.join(name)).unwrap(),
+                Visibility::Tracked
+            );
+        }
+        std::fs::write(root.join(".gitignore"), "ignored*.md\n").unwrap();
+        assert_eq!(
+            visibility(&root, &root.join("ignored[1].md")).unwrap(),
+            Visibility::Ignored
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn destinations_default_to_branch_names_and_accept_relative_and_absolute_paths() {

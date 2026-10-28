@@ -8,13 +8,10 @@
 //! (`$XDG_RUNTIME_DIR/soi.sock`), whose path each tab gets in
 //! `SOI_SOCKET`, along with its own id in `SOI_TAB_ID`.
 
-use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -40,7 +37,7 @@ pub const DEFAULT_AGENTS: &[&str] = &[
 pub const BUSY_WINDOW: Duration = Duration::from_millis(1500);
 
 /// The largest report accepted on the socket.
-const MAX_REPORT_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_REPORT_BYTES: usize = 64 * 1024;
 
 /// Marks the hook commands and the plugin file as soi's own.
 const MARKER: &str = "soi-agent-integration";
@@ -340,9 +337,22 @@ impl SessionMetadata {
 }
 
 impl Report {
-    pub fn parse(bytes: &[u8]) -> Option<(Uuid, State, String)> {
+    pub fn parse(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() > MAX_REPORT_BYTES {
+            return None;
+        }
         let report: Report = serde_json::from_slice(bytes).ok()?;
-        Some((report.tab, State::parse(&report.state)?, report.message))
+        State::parse(&report.state)?;
+        // These fields are displayed through GTK's NUL-terminated strings.
+        if report.message.contains('\0')
+            || report
+                .session
+                .as_ref()
+                .is_some_and(|s| s.provider.contains('\0'))
+        {
+            return None;
+        }
+        Some(report)
     }
 }
 
@@ -355,28 +365,6 @@ pub fn socket_path() -> Option<PathBuf> {
         "soi.sock"
     };
     Some(dir.join(name))
-}
-
-/// Reads one report from a connection: everything up to the end, or a
-/// newline. Gives up on overlong input.
-pub fn read_report(mut stream: impl Read) -> Option<(Uuid, State, String)> {
-    let mut data = Vec::new();
-    let mut buf = [0u8; 4096];
-    loop {
-        let n = stream.read(&mut buf).ok()?;
-        if n == 0 {
-            break;
-        }
-        data.extend_from_slice(&buf[..n]);
-        if data.contains(&b'\n') {
-            break;
-        }
-        if data.len() > MAX_REPORT_BYTES {
-            return None;
-        }
-    }
-    let line = data.split(|&b| b == b'\n').next()?;
-    Report::parse(line)
 }
 
 fn send(socket: &Path, report: &Report) -> io::Result<()> {
@@ -492,7 +480,7 @@ const CLAUDE_EVENTS: &[&str] = &[
 ];
 
 fn home() -> PathBuf {
-    crate::session::home_dir()
+    crate::dirs::home_dir()
 }
 
 pub fn claude_settings_path() -> PathBuf {
@@ -591,177 +579,7 @@ pub fn install_claude_hooks() -> Result<(), String> {
 /// One file for OpenCode 1.x and 2.x: 1.x calls the default export's
 /// `server` and passes events to its `event` hook; 2.x calls `setup` and
 /// ignores `server`, and its events come as a stream, with new names.
-pub const OPENCODE_PLUGIN: &str = r#"// soi-agent-integration: written by soi (Settings ▸ Agents).
-// Tells soi what OpenCode is doing, for its agents panel, and which session
-// it is, so soi can link it to the tab's task. Outside soi it does nothing.
-// soi only replaces this file while this first line is here.
-import { connect } from "node:net"
-
-// What to do with each event, or nothing outside soi.
-const reporter = () => {
-  const socket = process.env.SOI_SOCKET
-  const tab = process.env.SOI_TAB_ID
-  if (!socket || !tab) return undefined
-  // 2.x's background server works for every terminal, but has the
-  // environment of the tab that started it: it can't say which tab asks.
-  if (process.argv.includes("--service")) return undefined
-
-  // The session the user works in; subagents' sessions have a parent.
-  let main = ""
-  const children = new Set()
-  const notice = (info) => {
-    if (!info?.id) return
-    if (info.parentID) children.add(info.id)
-    else main = info.id
-  }
-  const mainOf = (id) => {
-    if (!main && id && !children.has(id)) main = id
-  }
-
-  let last = ""
-  const send = (state, message = "") => {
-    const report = { tab, state, message }
-    if (main) report.session = { provider: "opencode", id: main }
-    const line = JSON.stringify(report) + "\n"
-    if (line === last) return
-    // Set before it's delivered, so the same report right after (1.x says
-    // idle twice) isn't sent again; one soi missed is.
-    last = line
-    const missed = () => {
-      if (last === line) last = ""
-    }
-    try {
-      const client = connect(socket, () => client.end(line))
-      client.on("error", missed)
-    } catch {
-      missed()
-    }
-  }
-
-  // Busy sessions (subagents have their own) and open questions.
-  const busy = new Set()
-  let asking = 0
-  const settle = () => {
-    if (asking > 0) return
-    if (busy.size > 0) send("working")
-    else send("done")
-  }
-
-  const asked = (message) => {
-    asking++
-    send("input", message)
-  }
-  const answered = () => {
-    asking = Math.max(0, asking - 1)
-    settle()
-  }
-
-  return (type, p) => {
-    switch (type) {
-      case "session.created":
-      case "session.updated":
-        // 1.x has the session as `info`; 2.x has its fields.
-        notice(p.info ?? { id: p.sessionID, parentID: p.parentID })
-        break
-      // 2.x: one run of the agent.
-      case "session.execution.started":
-        mainOf(p.sessionID)
-        busy.add(p.sessionID)
-        settle()
-        break
-      case "session.execution.succeeded":
-      case "session.execution.interrupted":
-        busy.delete(p.sessionID)
-        settle()
-        break
-      case "session.execution.failed": {
-        busy.delete(p.sessionID)
-        const error = p.error
-        send("input", error?.data?.message ?? error?.message ?? error?.name ?? "Error")
-        break
-      }
-      case "form.created": {
-        const form = p.form ?? {}
-        asked(form.title ?? form.fields?.[0]?.title ?? "Has a question")
-        break
-      }
-      case "form.replied":
-      case "form.cancelled":
-        answered()
-        break
-      // 1.x
-      case "session.status": {
-        mainOf(p.sessionID)
-        const status = p.status?.type
-        if (status === "busy" || status === "retry") busy.add(p.sessionID)
-        else if (status === "idle") busy.delete(p.sessionID)
-        settle()
-        break
-      }
-      case "session.idle":
-        busy.delete(p.sessionID)
-        settle()
-        break
-      // Both: 2.x has `message` and `action` where 1.x has `title` and
-      // `permission`.
-      case "permission.updated":
-      case "permission.asked": {
-        const action = p.permission ?? p.action
-        asked(p.title ?? p.message ?? (action ? `Allow ${action}?` : "Permission needed"))
-        break
-      }
-      case "question.asked":
-        asked(p.questions?.[0]?.question ?? "Has a question")
-        break
-      case "permission.replied":
-      case "question.replied":
-      case "question.rejected":
-        answered()
-        break
-      case "session.error": {
-        const error = p.error
-        send("input", error?.data?.message ?? error?.message ?? error?.name ?? "Error")
-        break
-      }
-    }
-  }
-}
-
-// Late 1.x versions call both `server` and `setup`: only the first reports.
-let started = false
-const start = () => {
-  if (started) return undefined
-  const report = reporter()
-  started = report !== undefined
-  return report
-}
-
-// OpenCode 1.x
-const server = async () => {
-  const report = start()
-  if (!report) return {}
-  return { event: async ({ event }) => report(event.type, event.properties ?? {}) }
-}
-
-// OpenCode 2.x
-const setup = (opencode) => {
-  const report = start()
-  if (!report) return undefined
-  const stop = new AbortController()
-  ;(async () => {
-    for await (const event of opencode.event.subscribe({ signal: stop.signal })) {
-      report(event.type, event.data ?? {})
-    }
-  })().catch(() => {})
-  // Unloaded, as 2.x does to reload it: the next `setup` reports.
-  return () => {
-    stop.abort()
-    started = false
-  }
-}
-
-export default { id: "soi", server, setup }
-"#;
+pub const OPENCODE_PLUGIN: &str = include_str!("agents/opencode-plugin.js");
 
 pub fn opencode_plugin_path() -> PathBuf {
     let config = std::env::var_os("XDG_CONFIG_HOME")
@@ -812,84 +630,7 @@ pub fn install_opencode_plugin() -> Result<(), String> {
 /// The Pi extension. Like the OpenCode plugin, it talks to the socket
 /// directly. Pi loads TypeScript itself; this is plain JavaScript so it needs
 /// no types from Pi.
-pub const PI_EXTENSION: &str = r#"// soi-agent-integration: written by soi (Settings ▸ Agents).
-// Tells soi what Pi is doing, for its agents panel, and which session it is,
-// so soi can link it to the tab's task. Outside soi it does nothing.
-// soi only replaces this file while this first line is here.
-import { connect } from "node:net"
-
-export default function (pi) {
-  const socket = process.env.SOI_SOCKET
-  const tab = process.env.SOI_TAB_ID
-  if (!socket || !tab) return
-
-  // Ephemeral sessions (--no-session) can't be resumed, so they aren't linked.
-  let session = ""
-  const notice = (ctx) => {
-    const manager = ctx?.sessionManager
-    if (manager?.getSessionFile?.()) session = manager.getSessionId?.() ?? ""
-  }
-
-  let last = ""
-  const send = (state, message = "") => {
-    const report = { tab, state, message }
-    if (session) report.session = { provider: "pi", id: session }
-    const line = JSON.stringify(report) + "\n"
-    if (line === last) return
-    try {
-      // Only a delivered report counts: one soi missed is sent again.
-      const client = connect(socket, () => {
-        last = line
-        client.end(line)
-      })
-      client.on("error", () => {})
-    } catch {}
-  }
-
-  // A run lasts from agent_start until agent_settled: retries, compaction and
-  // queued messages can start more after agent_end.
-  let running = false
-  let asking = 0
-  let error = ""
-  const settle = () => {
-    if (asking > 0) return
-    if (running) send("working")
-    else if (error) send("input", error)
-    else send("done")
-  }
-
-  pi.on("session_start", async (_event, ctx) => {
-    notice(ctx)
-  })
-  pi.on("agent_start", async (_event, ctx) => {
-    notice(ctx)
-    running = true
-    error = ""
-    settle()
-  })
-  pi.on("tool_execution_start", async () => {
-    settle()
-  })
-  pi.on("agent_end", async (event) => {
-    const reply = [...(event.messages ?? [])].reverse().find((m) => m.role === "assistant")
-    error = reply?.stopReason === "error" ? reply.errorMessage || "Error" : ""
-  })
-  pi.on("agent_settled", async (event, ctx) => {
-    notice(ctx)
-    running = false
-    if (event.aborted) error = ""
-    settle()
-  })
-  pi.on("ui_prompt_start", async (event) => {
-    asking++
-    send("input", event.title || "Waiting for your answer")
-  })
-  pi.on("ui_prompt_end", async () => {
-    asking = Math.max(0, asking - 1)
-    settle()
-  })
-}
-"#;
+pub const PI_EXTENSION: &str = include_str!("agents/pi-extension.js");
 
 pub fn pi_extension_path() -> PathBuf {
     std::env::var_os("PI_CODING_AGENT_DIR")
@@ -982,158 +723,8 @@ pub fn install_agents_command() -> i32 {
 // ---------------------------------------------------------------------------
 // Launching
 
-/// The PATH agent tabs run with: the configured shell's, then soi's own, then
-/// ~/.local/bin. Zsh is interactive too, so .zshrc can add NVM and other tools.
-/// Each shell is asked once; changing profiles must not reuse another shell's PATH.
-pub fn agent_path(shell: &str) -> String {
-    static PATHS: OnceLock<ShellPaths> = OnceLock::new();
-    cached_path(PATHS.get_or_init(ShellPaths::default), shell, || {
-        let login = login_path(shell).unwrap_or_default();
-        let own = std::env::var_os("PATH").unwrap_or_default();
-        let mut dirs: Vec<PathBuf> = Vec::new();
-        for dir in std::env::split_paths(&login)
-            .chain(std::env::split_paths(&own))
-            .chain([home().join(".local/bin")])
-        {
-            if !dir.as_os_str().is_empty() && !dirs.contains(&dir) {
-                dirs.push(dir);
-            }
-        }
-        std::env::join_paths(dirs)
-            .map(|path| path.to_string_lossy().into_owned())
-            .unwrap_or_default()
-    })
-}
-
-type ShellPaths = Mutex<HashMap<String, Arc<OnceLock<String>>>>;
-
-fn cached_path(paths: &ShellPaths, shell: &str, load: impl FnOnce() -> String) -> String {
-    let path = paths
-        .lock()
-        .unwrap()
-        .entry(shell.to_string())
-        .or_default()
-        .clone();
-    // Do not hold the map lock while a shell runs its startup scripts.
-    path.get_or_init(load).clone()
-}
-
-const SHELL_PATH_MARKER: &[u8] = b"\0SOI_AGENT_PATH\0";
-const MAX_SHELL_OUTPUT: usize = 64 * 1024;
-
-fn is_zsh(shell: &str) -> bool {
-    Path::new(shell)
-        .file_name()
-        .is_some_and(|name| name == "zsh")
-}
-
-fn path_command(shell: &str) -> Command {
-    let mut command = Command::new(shell);
-    if is_zsh(shell) {
-        // Let zsh locate .zshrc (including ZDOTDIR); do not source it ourselves.
-        // NUL framing excludes startup greetings and logout messages from PATH.
-        command.args([
-            "-i",
-            "-l",
-            "-c",
-            "builtin printf '\\0SOI_AGENT_PATH\\0%s\\0' \"$PATH\"",
-        ]);
-    } else {
-        command.args(["-l", "-c", "printenv PATH"]);
-    }
-    command
-}
-
-/// Read the shell's PATH without letting startup scripts block agent launch.
-fn login_path(shell: &str) -> Option<String> {
-    probe_path(
-        &mut path_command(shell),
-        is_zsh(shell),
-        Duration::from_secs(3),
-    )
-}
-
-fn probe_path(command: &mut Command, framed: bool, timeout: Duration) -> Option<String> {
-    use std::os::fd::AsRawFd;
-
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let result = (|| {
-        let mut stdout = child.stdout.take()?;
-        let fd = stdout.as_raw_fd();
-        // SAFETY: stdout owns this live pipe; preserve its other descriptor flags.
-        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-            return None;
-        }
-        let started = Instant::now();
-        let mut output = Vec::new();
-        let mut found = None;
-        let mut chunk = [0; 8192];
-        loop {
-            let status = child.try_wait().ok()?;
-            // Drain while the child runs: a chatty .zshrc can fill the pipe.
-            loop {
-                if started.elapsed() >= timeout {
-                    return None;
-                }
-                match stdout.read(&mut chunk) {
-                    Ok(0) => break,
-                    Ok(len) => {
-                        output.extend_from_slice(&chunk[..len]);
-                        if output.len() > MAX_SHELL_OUTPUT {
-                            output.drain(..output.len() - MAX_SHELL_OUTPUT);
-                        }
-                        if framed && let Some(path) = framed_path(&output) {
-                            found = Some(path);
-                        }
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-                    Err(_) => return None,
-                }
-            }
-            if let Some(status) = status {
-                if !status.success() {
-                    return None;
-                }
-                return if framed {
-                    found
-                } else {
-                    // Keep the existing login-shell behavior for bash and fish.
-                    std::str::from_utf8(&output)
-                        .ok()?
-                        .lines()
-                        .rev()
-                        .find(|line| !line.trim().is_empty())
-                        .map(String::from)
-                };
-            }
-            if started.elapsed() < timeout {
-                std::thread::sleep(Duration::from_millis(20))
-            }
-        }
-    })();
-    // Also reap unsuccessful/timed-out probes; never wait for pipe EOF from a
-    // background process a startup script may have left behind.
-    let _ = child.kill();
-    let _ = child.wait();
-    result
-}
-
-fn framed_path(output: &[u8]) -> Option<String> {
-    let start = output
-        .windows(SHELL_PATH_MARKER.len())
-        .rposition(|bytes| bytes == SHELL_PATH_MARKER)?
-        + SHELL_PATH_MARKER.len();
-    let path = &output[start..];
-    let end = path.iter().position(|byte| *byte == 0)?;
-    std::str::from_utf8(&path[..end]).ok().map(String::from)
-}
+mod shell_path;
+pub use shell_path::agent_path;
 
 /// Where `program` would be run from with `path` as PATH.
 pub fn find_program(program: &str, path: &str) -> Option<PathBuf> {
@@ -1161,18 +752,32 @@ pub fn display_name(program: &str) -> &str {
 }
 
 fn write_atomically(path: &Path, text: &str) -> Result<(), String> {
-    let fail = |err: io::Error| format!("cannot write {}: {err}", path.display());
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(fail)?;
-    }
-    let tmp = path.with_extension("soi-tmp");
-    fs::write(&tmp, text).map_err(fail)?;
-    fs::rename(&tmp, path).map_err(fail)
+    crate::dirs::write_atomic(path, text.as_bytes(), 0o666)
+        .map_err(|err| format!("cannot write {}: {err}", path.display()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reports_reject_oversized_json_and_nul_containing_fields() {
+        let mut report = Report {
+            tab: Uuid::new_v4(),
+            state: "input".into(),
+            message: "x".repeat(MAX_REPORT_BYTES),
+            session: None,
+        };
+        assert!(Report::parse(&serde_json::to_vec(&report).unwrap()).is_none());
+        report.message = "\0".into();
+        assert!(Report::parse(&serde_json::to_vec(&report).unwrap()).is_none());
+        report.message.clear();
+        report.session = Some(SessionMetadata {
+            provider: "\0".into(),
+            id: "abc".into(),
+        });
+        assert!(Report::parse(&serde_json::to_vec(&report).unwrap()).is_none());
+    }
 
     #[test]
     fn session_metadata_is_optional_and_old_reports_still_parse() {
@@ -1187,7 +792,15 @@ mod tests {
         assert_eq!(report.session.unwrap().id, "abc-123");
         assert_eq!(
             Report::parse(new.as_bytes()),
-            Some((tab, State::Done, String::new()))
+            Some(Report {
+                tab,
+                state: "done".into(),
+                message: String::new(),
+                session: Some(SessionMetadata {
+                    provider: "claude".into(),
+                    id: "abc-123".into()
+                }),
+            })
         );
     }
 
@@ -1392,11 +1005,10 @@ mod tests {
             session: None,
         };
         send(&path, &report).unwrap();
-        let (stream, _) = listener.accept().unwrap();
-        assert_eq!(
-            read_report(stream),
-            Some((tab, State::Input, "Allow edit?".into()))
-        );
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut bytes = Vec::new();
+        stream.read_to_end(&mut bytes).unwrap();
+        assert_eq!(Report::parse(&bytes), Some(report));
         assert_eq!(Report::parse(br#"{"tab":"nope","state":"done"}"#), None);
         assert_eq!(
             Report::parse(format!(r#"{{"tab":"{tab}","state":"sleeping"}}"#).as_bytes()),
@@ -1468,208 +1080,5 @@ mod tests {
         assert_eq!(find_program("missing", &path), None);
         assert_eq!(find_program(tool.to_str().unwrap(), ""), Some(tool));
         fs::remove_dir_all(&dir).unwrap();
-    }
-
-    struct ShellHome(PathBuf);
-
-    impl ShellHome {
-        fn new() -> Self {
-            let dir = std::env::temp_dir().join(format!("soi-shell-path-{}", Uuid::new_v4()));
-            fs::create_dir(&dir).unwrap();
-            Self(dir)
-        }
-    }
-
-    impl Drop for ShellHome {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
-    #[test]
-    fn only_zsh_path_discovery_is_interactive() {
-        for shell in ["zsh", "/bin/zsh", "/opt/homebrew/bin/zsh"] {
-            let command = path_command(shell);
-            let args: Vec<_> = command.get_args().collect();
-            assert_eq!(args[..3], ["-i", "-l", "-c"]);
-            assert!(args[3].to_str().unwrap().contains("SOI_AGENT_PATH"));
-        }
-        for shell in ["/bin/bash", "fish", "/bin/sh"] {
-            let command = path_command(shell);
-            let args: Vec<_> = command.get_args().collect();
-            assert_eq!(args, ["-l", "-c", "printenv PATH"]);
-        }
-    }
-
-    #[test]
-    fn zsh_path_includes_zshrc_tools_with_an_isolated_home() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let path = std::env::var("PATH").unwrap_or_default();
-        let Some(zsh) = find_program("zsh", &path) else {
-            eprintln!("zsh is not installed; real-zsh startup check skipped");
-            return;
-        };
-        let home = ShellHome::new();
-        let tools = home.0.join("nvm tools");
-        fs::create_dir(&tools).unwrap();
-        for name in ["mate", "node"] {
-            let file = tools.join(name);
-            fs::write(&file, "#!/bin/sh\nexit 0\n").unwrap();
-            fs::set_permissions(file, fs::Permissions::from_mode(0o700)).unwrap();
-        }
-        for custom_zdotdir in [false, true] {
-            let dotdir = if custom_zdotdir {
-                fs::write(home.0.join(".zshrc"), "exit 17\n").unwrap();
-                let dir = home.0.join("dotfiles");
-                fs::create_dir(&dir).unwrap();
-                dir
-            } else {
-                home.0.clone()
-            };
-            fs::write(dotdir.join(".zprofile"), "print -r -- 'login greeting'\n").unwrap();
-            fs::write(
-                dotdir.join(".zshrc"),
-                "[[ -o interactive ]] || return\nexport PATH=\"$HOME/nvm tools:$PATH\"\nprint -r -- 'interactive greeting'\nalias printf='print -r -- not-a-path'\n",
-            )
-            .unwrap();
-            fs::write(dotdir.join(".zlogout"), "print -r -- 'logout greeting'\n").unwrap();
-            let mut command = path_command(zsh.to_str().unwrap());
-            command
-                .env_clear()
-                .env("HOME", &home.0)
-                .env("TERM", "dumb")
-                .env("PATH", "/usr/bin:/bin");
-            if custom_zdotdir {
-                command.env("ZDOTDIR", &dotdir);
-            }
-            let discovered = probe_path(&mut command, true, Duration::from_secs(3)).unwrap();
-            assert_eq!(find_program("mate", &discovered), Some(tools.join("mate")));
-            assert_eq!(find_program("node", &discovered), Some(tools.join("node")));
-            assert!(!discovered.contains("greeting"));
-        }
-    }
-
-    #[test]
-    fn framed_shell_path_ignores_noise_and_rejects_incomplete_output() {
-        assert_eq!(
-            framed_path(b"hello\n\0SOI_AGENT_PATH\0/tools with spaces:/bin\0goodbye\n"),
-            Some("/tools with spaces:/bin".into())
-        );
-        assert_eq!(framed_path(b"/bin\n"), None);
-        assert_eq!(framed_path(b"\0SOI_AGENT_PATH\0/bin"), None);
-        assert_eq!(framed_path(b"\0SOI_AGENT_PATH\0\xff\0"), None);
-    }
-
-    #[test]
-    fn shell_path_drains_large_startup_and_logout_output() {
-        let mut command = Command::new("/bin/sh");
-        command.args([
-            "-c",
-            r#"
-            i=0
-            while [ "$i" -lt 10000 ]; do printf 'startup greeting\n'; i=$((i+1)); done
-            printf '\0SOI_AGENT_PATH\0/tools:/bin\0'
-            i=0
-            while [ "$i" -lt 10000 ]; do printf 'logout greeting\n'; i=$((i+1)); done
-        "#,
-        ]);
-        assert_eq!(
-            probe_path(&mut command, true, Duration::from_secs(3)),
-            Some("/tools:/bin".into())
-        );
-    }
-
-    #[test]
-    fn failed_shell_path_probes_allow_the_existing_fallback() {
-        for script in [
-            "exit 1",
-            "printf '\\0SOI_AGENT_PATH\\0/bin\\0'; exit 1",
-            "printf greeting",
-        ] {
-            let mut command = Command::new("/bin/sh");
-            command.args(["-c", script]);
-            assert_eq!(probe_path(&mut command, true, Duration::from_secs(1)), None);
-        }
-        let mut command = Command::new("/nonexistent/soi-shell");
-        assert_eq!(probe_path(&mut command, true, Duration::from_secs(1)), None);
-    }
-
-    #[test]
-    fn shell_path_probe_times_out_and_reaps_the_child() {
-        let home = ShellHome::new();
-        let pid_file = home.0.join("pid");
-        let mut command = Command::new("/bin/sh");
-        command
-            .args([
-                "-c",
-                "printf '%s' \"$$\" > \"$1\"; while :; do :; done",
-                "soi-test",
-            ])
-            .arg(&pid_file);
-        let started = Instant::now();
-        assert_eq!(
-            probe_path(&mut command, true, Duration::from_millis(200)),
-            None
-        );
-        assert!(started.elapsed() < Duration::from_secs(2));
-        let pid: libc::pid_t = fs::read_to_string(pid_file).unwrap().parse().unwrap();
-        // SAFETY: signal 0 checks existence without sending a signal.
-        assert_eq!(
-            unsafe { libc::kill(pid, 0) },
-            -1,
-            "the timed-out shell was reaped"
-        );
-        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
-    }
-
-    #[test]
-    fn non_zsh_path_output_keeps_login_shell_parsing() {
-        let mut command = Command::new("/bin/sh");
-        command.args(["-c", "printf 'greeting\\n/tools:/bin\\n\\n'"]);
-        assert_eq!(
-            probe_path(&mut command, false, Duration::from_secs(1)),
-            Some("/tools:/bin".into())
-        );
-    }
-
-    #[test]
-    fn shell_path_cache_is_separate_for_each_configured_shell() {
-        let paths = ShellPaths::default();
-        assert_eq!(
-            cached_path(&paths, "/bin/zsh", || "/nvm/bin".into()),
-            "/nvm/bin"
-        );
-        assert_eq!(
-            cached_path(&paths, "/bin/bash", || "/bash/bin".into()),
-            "/bash/bin"
-        );
-        assert_eq!(
-            cached_path(&paths, "/bin/zsh", || panic!("already cached")),
-            "/nvm/bin"
-        );
-    }
-
-    #[test]
-    fn concurrent_shell_path_queries_only_probe_once() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        let paths = ShellPaths::default();
-        let calls = AtomicUsize::new(0);
-        std::thread::scope(|scope| {
-            for _ in 0..4 {
-                scope.spawn(|| {
-                    assert_eq!(
-                        cached_path(&paths, "/bin/zsh", || {
-                            calls.fetch_add(1, Ordering::Relaxed);
-                            std::thread::sleep(Duration::from_millis(20));
-                            "/nvm/bin".into()
-                        }),
-                        "/nvm/bin"
-                    );
-                });
-            }
-        });
-        assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 }

@@ -6,6 +6,10 @@ use super::*;
 /// Opens a window, restoring `session` if given. Without a session (and
 /// with `fill`), it starts with one workspace.
 pub(super) fn new_window(shared: &Rc<Shared>, session: Option<&WindowSession>, fill: bool) -> App {
+    #[expect(
+        clippy::expect_used,
+        reason = "windows are only made by the running application"
+    )]
     let app = gio::Application::default()
         .and_downcast::<gtk::Application>()
         .expect("running inside the GTK application");
@@ -208,9 +212,13 @@ pub(super) fn new_window(shared: &Rc<Shared>, session: Option<&WindowSession>, f
     panel::connect(&state);
     tasks::connect(&state);
 
-    // This handler owns the window's state: it lives as long as the window.
-    let owner = state.clone();
+    // Keep state while open, but break window -> handler -> state -> window
+    // on an accepted close, not only when the GObject is finally disposed.
+    let owner_slot = RefCell::new(Some(state.clone()));
     window.connect_close_request(move |window| {
+        let Some(owner) = owner_slot.borrow().clone() else {
+            return glib::Propagation::Proceed;
+        };
         finish_inline_renames(&owner, true);
         let shared = owner.shared.clone();
         if !owner.close_confirmed.get() {
@@ -247,6 +255,7 @@ pub(super) fn new_window(shared: &Rc<Shared>, session: Option<&WindowSession>, f
             refresh_window_switchers(&shared);
         }
         release_terminals(&owner);
+        owner_slot.take();
         glib::Propagation::Proceed
     });
 
@@ -390,6 +399,10 @@ pub(super) fn update_title(state: &App) {
 }
 
 /// "Window N" with the lowest N not in use.
+#[expect(
+    clippy::expect_used,
+    reason = "an endless range always finds a free name"
+)]
 pub(super) fn next_window_name(shared: &Shared) -> String {
     let taken: Vec<String> = shared
         .windows()
