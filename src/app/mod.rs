@@ -1,0 +1,476 @@
+//! The GTK user interface: a sidebar of (optionally grouped) workspaces and,
+//! per workspace, a tree of split panes holding terminals.
+
+use std::cell::{Cell, OnceCell, RefCell};
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::rc::{Rc, Weak};
+
+use gtk::prelude::*;
+use gtk::{gdk, gio, glib, graphene, pango};
+use uuid::Uuid;
+
+use crate::agents::Agent;
+use crate::keybindings::{self, BINDINGS, Keybindings};
+use crate::platform::Snap;
+use crate::session::{
+    self, Closed, Entry, Group, Layout, Session, WindowSession, Workspace, home_dir,
+};
+use crate::settings::{self, Settings};
+use crate::term::{Input, Progress, TermView};
+use crate::theme::{self, TerminalTheme};
+
+mod actions;
+mod changes;
+mod panel;
+mod panes;
+mod persist;
+mod preview;
+mod settings_window;
+mod sidebar;
+mod switcher;
+mod task_view;
+mod tasks;
+mod window;
+mod workspaces;
+
+#[cfg(feature = "gui-tests")]
+mod css_tests;
+#[cfg(feature = "gui-tests")]
+pub(crate) mod gui_tests;
+#[cfg(feature = "gui-tests")]
+mod window_tests;
+
+use actions::*;
+use panes::*;
+use persist::*;
+use settings_window::*;
+use sidebar::*;
+use window::*;
+use workspaces::*;
+
+const APP_ID: &str = "dev.soi.Soi";
+const DEV_APP_ID: &str = "dev.soi.Soi.Dev";
+// Also catches shell cwd changes and divider drags without writing unchanged
+// snapshots to disk. New windows and closing windows are saved immediately.
+const SAVE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+/// How often terminal output is saved, in case soi doesn't quit normally.
+const OUTPUT_SAVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(120);
+/// How much of each terminal's output comes back after a restart.
+const SAVED_LINES: usize = 2000;
+const MIN_OPACITY: f64 = 0.2;
+/// How many closed tabs and workspaces can be reopened.
+const CLOSED: usize = 20;
+
+/// Layout only; colors come from the terminal theme (see `apply_colors`).
+const CSS: &str = "
+.pane { border: 1px solid transparent; }
+/* One scale: text normal or 0.8em; spacing 2, 4, 8, 12px (24 above an empty list); corners 6px;
+   small buttons a 16px icon with 4px around it. */
+.caption { font-size: 0.8em; }
+.group-name, .soi-windows-title, .agents-title { font-weight: bold; font-size: 0.8em; }
+.pane-header { padding: 2px 4px; }
+.pane-header button, .group-toggle, .group-add, .ws-close, .soi-windows-action {
+  min-width: 16px; min-height: 16px; padding: 4px; border-radius: 6px;
+}
+.group-toggle, .group-add, .ws-close { border: none; background: none; box-shadow: none; }
+.pane-tab { padding: 0 0 0 8px; margin: 2px 0; border-radius: 6px; }
+.ws-name { font-weight: bold; }
+.ws-worktree { font-weight: bold; }
+.ws-close { opacity: 0; }
+row:hover .ws-close, row:selected .ws-close, .ws-close:focus-visible { opacity: 1; }
+.soi-sidebar, .soi-sidebar list { background-color: transparent; }
+.soi-toolbar { padding: 4px 8px; }
+.soi-windows-title { padding: 4px 8px 0; }
+.agent-dot { font-size: 0.8em; }
+.tab-progress { min-width: 36px; }
+.tab-progress trough, .tab-progress progress { min-height: 3px; }
+.agents-title { padding-left: 4px; }
+.agents-count { font-weight: bold; font-size: 0.8em; }
+.agents-notice { padding: 2px 0 2px 4px; }
+";
+
+// Linux signal numbers, used to save the session before quitting.
+const SIGHUP: i32 = 1;
+const SIGINT: i32 = 2;
+const SIGTERM: i32 = 15;
+
+/// One terminal in a pane; a pane shows one of its tabs at a time.
+struct Tab {
+    /// Tells agents' reports apart (`SOI_TAB_ID`).
+    id: Uuid,
+    terminal: TermView,
+    /// The coding agent running here, if any.
+    agent: RefCell<Agent>,
+    /// Marks the tab when its agent needs you.
+    dot: gtk::Label,
+    /// The tab in the pane header: title and close button.
+    button: gtk::Box,
+    title: gtk::Label,
+    /// What the program reports of its progress (OSC 9;4), when it does
+    /// (shown in `button`).
+    reported_progress: Cell<Option<Progress>>,
+    close: gtk::Button,
+    /// Directory the shell was started in.
+    cwd: PathBuf,
+    /// `TermView::output_serial` when the output was last saved.
+    saved_output: Cell<u64>,
+}
+
+/// Live state of one pane. The pane widget itself is a `gtk::Box` (header +
+/// terminals) and is the key in `State::panes`.
+struct Pane {
+    tabs: RefCell<Vec<Rc<Tab>>>,
+    active: Cell<usize>,
+    /// Shows the active tab's terminal.
+    stack: gtk::Stack,
+    /// The tabs in the header.
+    strip: gtk::Box,
+    /// Shows where a dragged tab would go (see `DropZone`).
+    drop_hint: gtk::Box,
+}
+
+impl Pane {
+    fn current(&self) -> Option<Rc<Tab>> {
+        self.tabs.borrow().get(self.active.get()).cloned()
+    }
+
+    fn terminal(&self) -> Option<TermView> {
+        self.current().map(|tab| tab.terminal.clone())
+    }
+}
+
+/// What all windows share: settings, theme and profile.
+struct Shared {
+    /// Open windows, oldest first (closed ones drop out).
+    windows: RefCell<Vec<Weak<State>>>,
+    /// All contexts, including closed windows that can be reopened.
+    session: RefCell<Session>,
+    /// Retry failed saves, and persist legacy sessions with new identities.
+    session_dirty: Cell<bool>,
+    settings: RefCell<Settings>,
+    /// Detected theme with the user's settings applied on top.
+    theme: RefCell<TerminalTheme>,
+    /// Interface colors (from the terminal theme, at the chosen opacity).
+    background_css: gtk::CssProvider,
+    settings_window: glib::WeakRef<gtk::Window>,
+    /// Name of the active settings profile.
+    profile: RefCell<String>,
+    keybindings: RefCell<Keybindings>,
+    /// The settings window's pages, to stay on the same page when rebuilt.
+    settings_stack: glib::WeakRef<gtk::Stack>,
+    /// Shown once on the shortcuts page (e.g. that a key moved).
+    shortcut_note: RefCell<Option<String>>,
+    /// Text size factor (zoom in/out), for all terminals.
+    zoom: Cell<f64>,
+    /// Every tab by id, for agents' reports and the agents panel.
+    tabs: RefCell<HashMap<Uuid, Weak<Tab>>>,
+    /// What the agents panels show now (see `panel::refresh`).
+    agents_shown: RefCell<String>,
+    /// The tab being dragged onto a pane, if any (see `TabDrop`).
+    tab_drop: RefCell<TabDrop>,
+}
+
+impl Shared {
+    /// The open windows, oldest first, without those being closed.
+    fn windows(&self) -> Vec<App> {
+        self.windows
+            .borrow()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .filter(|window| !window.closing.get())
+            .collect()
+    }
+}
+
+struct WorkspaceUi {
+    name: RefCell<String>,
+    root_dir: PathBuf,
+    task: RefCell<Option<crate::tasks::TaskContext>>,
+    /// Stack page, holding `plan_split`.
+    holder: gtk::Box,
+    /// The terminals, and on the right the plan while it is shown, with a
+    /// divider between them to drag.
+    plan_split: gtk::Paned,
+    /// Its only child is the root of the split tree.
+    layout: gtk::Box,
+    /// How wide the plan was last, for the next time it opens.
+    plan_width: Cell<i32>,
+    last_focus: glib::WeakRef<gtk::Box>,
+    /// The pane filling the workspace for now, the others hidden (see `zoom_pane`).
+    zoomed: glib::WeakRef<gtk::Box>,
+    /// What's typed into one pane goes to all of them (see `broadcast_input`).
+    broadcast: Cell<bool>,
+    /// The plan beside the terminal, while it is shown (see `preview::toggle_for`).
+    plan_panel: RefCell<Option<Rc<preview::Plan>>>,
+}
+
+/// Sidebar structure; workspace details live in `State::workspaces`.
+enum Node {
+    Workspace(Uuid),
+    Group {
+        id: Uuid,
+        name: String,
+        collapsed: bool,
+        workspaces: Vec<Uuid>,
+    },
+}
+
+struct State {
+    /// The context shown, which can change (see `swap_context`).
+    id: Cell<Uuid>,
+    window: gtk::ApplicationWindow,
+    sidebar: gtk::ScrolledWindow,
+    list: gtk::ListBox,
+    stack: gtk::Stack,
+    tree: RefCell<Vec<Node>>,
+    workspaces: RefCell<HashMap<Uuid, Rc<WorkspaceUi>>>,
+    panes: RefCell<HashMap<gtk::Box, Rc<Pane>>>,
+    /// Divider ratio for each split, kept until the split has a size to apply it to.
+    ratios: RefCell<HashMap<gtk::Paned, Rc<Cell<Option<f64>>>>>,
+    active: Cell<Option<Uuid>>,
+    focused: glib::WeakRef<gtk::Box>,
+    rebuilding: Cell<bool>,
+    closing: Cell<bool>,
+    /// The user agreed to close the window although programs still run.
+    close_confirmed: Cell<bool>,
+    /// When the window was last typed in (see `WindowSession::last_used`).
+    last_used: Cell<u64>,
+    shared: Rc<Shared>,
+    /// The window's name, shown in its title and sidebar.
+    name: RefCell<String>,
+    /// Shows the name; opens the window switcher.
+    window_button: gtk::MenuButton,
+    window_label: gtk::Label,
+    /// The window switcher's contents (see `fill_switcher`).
+    window_list: gtk::Box,
+    /// The window's keyboard shortcuts, rebuilt when they're changed.
+    shortcuts: RefCell<Option<gtk::ShortcutController>>,
+    drop_hint: RefCell<Option<(gtk::ListBoxRow, &'static str)>>,
+    /// The workspace last shown in each group (`None`: ungrouped ones), to
+    /// come back to it when switching groups.
+    last_in_group: RefCell<HashMap<Option<Uuid>, Uuid>>,
+    /// Holds the profile switcher in the sidebar toolbar.
+    profile_slot: gtk::Box,
+    /// The agents panel, its toggle and notifications.
+    agents: panel::AgentsUi,
+}
+
+type App = Rc<State>;
+
+#[derive(Clone, Copy)]
+enum Dir {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+pub fn run() -> glib::ExitCode {
+    glib::set_application_name("Soi");
+    // In dev mode a separate app, so it runs next to the installed soi
+    // instead of opening a window in it.
+    let id = if crate::dev_mode() {
+        DEV_APP_ID
+    } else {
+        APP_ID
+    };
+    let app = gtk::Application::builder().application_id(id).build();
+    let shared: Rc<OnceCell<Rc<Shared>>> = Rc::default();
+    app.connect_activate(move |app| match shared.get() {
+        // Started again while running (e.g. from the app menu).
+        Some(shared) => reopen_last(shared),
+        None => {
+            let shared = shared.get_or_init(|| init_shared(app));
+            panel::listen(shared);
+            restore_windows(shared);
+        }
+    });
+    app.run()
+}
+
+/// Brings back the saved context used last or, with none saved, the window
+/// used last. A new, empty window only when there's no context at all.
+fn reopen_last(shared: &Rc<Shared>) {
+    let saved = shared
+        .session
+        .borrow()
+        .last_closed()
+        .map(|context| context.id);
+    if let Some(id) = saved {
+        open_window_context(shared, id);
+    } else if let Some(window) = shared
+        .windows()
+        .into_iter()
+        .max_by_key(|window| window.last_used.get())
+    {
+        window.window.present();
+    } else {
+        new_window(shared, None, true);
+    }
+}
+
+fn restore_windows(shared: &Rc<Shared>) {
+    let windows = shared.session.borrow().windows_to_open();
+    if windows.is_empty() {
+        new_window(shared, None, true);
+    }
+    for window in &windows {
+        new_window(shared, Some(window), true);
+    }
+}
+
+/// Sets up what all windows share: styles, settings, saving.
+fn init_shared(app: &gtk::Application) -> Rc<Shared> {
+    // Matches the installed icon (`make install`), for windows and the
+    // taskbar. Only possible once GTK is running, i.e. in here.
+    gtk::Window::set_default_icon_name(APP_ID);
+    let display = gdk::Display::default().expect("no display");
+    let provider = gtk::CssProvider::new();
+    provider.load_from_string(CSS);
+    gtk::style_context_add_provider_for_display(
+        &display,
+        &provider,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+    let background_css = gtk::CssProvider::new();
+    gtk::style_context_add_provider_for_display(
+        &display,
+        &background_css,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+
+    let profile = settings::active_profile();
+    let settings = Settings::load_profile(&profile);
+    let theme = effective_theme(&settings);
+    let session = Session::restored();
+    let zoom = session
+        .zoom
+        .map_or(1.0, |zoom| zoom.clamp(MIN_ZOOM, MAX_ZOOM));
+    let shared = Rc::new(Shared {
+        windows: RefCell::default(),
+        session: RefCell::new(session),
+        session_dirty: Cell::new(true),
+        settings: RefCell::new(settings),
+        theme: RefCell::new(theme),
+        background_css,
+        settings_window: glib::WeakRef::new(),
+        profile: RefCell::new(profile),
+        keybindings: RefCell::new(Keybindings::load()),
+        settings_stack: glib::WeakRef::new(),
+        shortcut_note: RefCell::default(),
+        zoom: Cell::new(zoom),
+        tabs: RefCell::default(),
+        agents_shown: RefCell::default(),
+        tab_drop: RefCell::default(),
+    });
+    // The terminals' font with the zoom and window scale, before any opens.
+    apply_settings(&shared);
+    panel::start(&shared);
+    panel::install_app_action(app, &shared);
+
+    let weak = Rc::downgrade(&shared);
+    glib::timeout_add_local(SAVE_INTERVAL, move || match weak.upgrade() {
+        Some(shared) => {
+            save_all(&shared);
+            glib::ControlFlow::Continue
+        }
+        None => glib::ControlFlow::Break,
+    });
+    let weak = Rc::downgrade(&shared);
+    glib::timeout_add_local(OUTPUT_SAVE_INTERVAL, move || match weak.upgrade() {
+        Some(shared) => {
+            save_output(&shared, &shared.windows());
+            glib::ControlFlow::Continue
+        }
+        None => glib::ControlFlow::Break,
+    });
+    for signal in [SIGHUP, SIGINT, SIGTERM] {
+        let weak = Rc::downgrade(&shared);
+        let app = app.clone();
+        glib_unix::unix_signal_add_local(signal, move || {
+            match weak.upgrade() {
+                Some(shared) => save_and_quit(&shared),
+                None => app.quit(),
+            }
+            glib::ControlFlow::Break
+        });
+    }
+    // Also what macOS runs for Cmd+Q, the app menu and the Dock's Quit.
+    let quit_action = gio::SimpleAction::new("quit", None);
+    let weak = Rc::downgrade(&shared);
+    quit_action.connect_activate(move |_, _| {
+        if let Some(shared) = weak.upgrade() {
+            quit(&shared);
+        }
+    });
+    app.add_action(&quit_action);
+    shared
+}
+
+/// Quits soi (the quit shortcut, or the Dock's Quit on a Mac). Unlike
+/// closing the windows one by one, all of them come back next time. Asks
+/// first when programs would be stopped.
+fn quit(shared: &Rc<Shared>) {
+    let windows = shared.windows();
+    let Some(front) = windows
+        .iter()
+        .find(|state| state.window.is_active())
+        .or(windows.first())
+    else {
+        save_and_quit(shared);
+        return;
+    };
+    let mut running: Vec<String> = windows
+        .iter()
+        .flat_map(|state| running_in(state, &all_panes(state)))
+        .collect();
+    running.sort();
+    running.dedup();
+    let weak = Rc::downgrade(shared);
+    confirm_close(front, "soi", running, move || {
+        if let Some(shared) = weak.upgrade() {
+            save_and_quit(&shared);
+        }
+    });
+}
+
+/// Saves every window's layout and output, then quits.
+fn save_and_quit(shared: &Shared) {
+    save_all(shared);
+    save_output(shared, &shared.windows());
+    for window in shared.windows() {
+        window.closing.set(true);
+    }
+    if let Some(app) = gio::Application::default() {
+        app.quit();
+    }
+}
+
+/// `~/foo` for paths under the home directory.
+fn tilde(path: &Path) -> String {
+    match path.strip_prefix(home_dir()) {
+        Ok(rest) if rest.as_os_str().is_empty() => "~".into(),
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => path.display().to_string(),
+    }
+}
+
+/// Current branch (or short commit) of the git repo at `dir`, if any.
+fn git_branch(dir: &Path) -> Option<String> {
+    let dot_git = dir.join(".git");
+    let git_dir = if dot_git.is_file() {
+        // Worktree or submodule: `.git` is a file pointing at the real dir.
+        let content = fs::read_to_string(&dot_git).ok()?;
+        dir.join(content.strip_prefix("gitdir:")?.trim())
+    } else {
+        dot_git
+    };
+    let head = fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let head = head.trim();
+    match head.strip_prefix("ref: refs/heads/") {
+        Some(branch) => Some(branch.to_string()),
+        None => Some(head.get(..7)?.to_string()),
+    }
+}

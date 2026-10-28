@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Soi
+GenericName=Terminal
+Comment=Terminal workspaces with splits, groups and saved layouts
+Exec=@BINDIR@/soi
+Icon=@ICON@
+Terminal=false
+Categories=System;TerminalEmulator;GTK;
+Keywords=terminal;shell;console;workspace;split;
+StartupNotify=true
+StartupWMClass=dev.soi.Soi
