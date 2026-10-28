@@ -88,6 +88,7 @@ pub(in crate::app) fn add_command_tab(
     let title = gtk::Label::builder()
         .label(tilde(&cwd))
         .xalign(0.0)
+        .width_chars(TITLE_MIN_CHARS)
         .max_width_chars(28)
         .ellipsize(pango::EllipsizeMode::End)
         .build();
@@ -200,18 +201,37 @@ pub(in crate::app) fn add_command_tab(
             }
         }
     });
+    // Shells set several titles in a row while starting up (or restoring);
+    // showing only the last keeps the tab from flickering.
     let tab_ref = Rc::downgrade(&tab);
+    let pending: Rc<RefCell<Option<String>>> = Rc::default();
     terminal.connect_title_changed(move |title| {
-        if let Some(tab) = tab_ref.upgrade()
-            && !title.is_empty()
-        {
-            tab.title.set_text(title);
+        if title.is_empty() {
+            return;
         }
+        let scheduled = pending.replace(Some(title.to_string())).is_some();
+        if scheduled {
+            return;
+        }
+        let (tab_ref, pending) = (tab_ref.clone(), pending.clone());
+        glib::timeout_add_local_once(TITLE_SETTLE, move || {
+            if let Some(title) = pending.take()
+                && let Some(tab) = tab_ref.upgrade()
+                && tab.title.text() != title
+            {
+                tab.title.set_text(&title);
+            }
+        });
     });
 
     update_tab_strip(&info);
     Some(index)
 }
+
+/// How long a tab waits for a shell's titles to settle before showing one.
+const TITLE_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
+/// The narrowest a tab's title gets, so tabs don't resize with short titles.
+const TITLE_MIN_CHARS: i32 = 16;
 
 /// Moves tab `from` of a pane to just before the tab now at `to` (counted
 /// with the moved tab still in place).
