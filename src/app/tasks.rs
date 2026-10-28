@@ -463,7 +463,7 @@ fn create(state: &App) {
                 1 => Some(format!("{} does not exist, so no plan was linked.", path.display())),
                 _ => None,
             };
-            let command = preset.as_ref().map(|p| agent_command(p, with_brief.then(|| task.brief()), &task, &agent_path));
+            let command = preset.as_ref().map(|p| agent_command(p, with_brief.then(|| task.brief(&destination)), &task, &agent_path));
             let mut events = vec![format!("Created on branch {branch}, worktree {}", destination.display())];
             if let Some(preset) = &preset {
                 events.push(started(preset, with_brief));

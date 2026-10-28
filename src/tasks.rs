@@ -438,15 +438,29 @@ impl TaskContext {
     }
 
     /// What the user explicitly hands to an agent. Plain Markdown, so it can be
-    /// pasted anywhere or passed as an initial prompt argument.
-    pub fn brief(&self) -> String {
+    /// pasted anywhere or passed as an initial prompt argument. `worktree` is
+    /// the folder the agent works in (the task workspace's).
+    pub fn brief(&self, worktree: &Path) -> String {
         let mut out = format!("# Task: {}\n\n", self.title);
+        out.push_str(&format!("- ID: {}\n", self.id));
         if let Some(ticket) = &self.ticket {
-            out.push_str(&format!("Ticket: {ticket}\n"));
+            out.push_str(&format!("- Ticket: {ticket}\n"));
         }
-        out.push_str(&format!("Status: {}\n", self.status.label()));
+        out.push_str(&format!("- Status: {}\n", self.status.label()));
+        if self.created > 0 {
+            out.push_str(&format!("- Created: {}\n", local_time(self.created)));
+        }
+        out.push_str("\n## Workspace\n\n");
+        out.push_str(&format!("- Worktree: {}\n", worktree.display()));
         if let Some(branch) = &self.branch {
-            out.push_str(&format!("Branch: {branch}\n"));
+            out.push_str(&format!("- Branch: {branch}\n"));
+        }
+        out.push_str(&format!("- Repository: {}\n", self.repository.display()));
+        let same = worktree.canonicalize().ok() == self.repository.canonicalize().ok();
+        if !same {
+            out.push_str(
+                "\nWork and commit only in the worktree, on its branch; leave the repository's own checkout alone.\n",
+            );
         }
         out.push('\n');
         self.ticket(&mut out);
@@ -792,11 +806,13 @@ mod tests {
         task.description = "Users get logged out.".into();
         task.checklist = items;
         task.plan = Some("/repo/.worktrees/fix/.soi/plan.md".into());
-        let brief = task.brief();
+        task.branch = Some("fix".into());
+        let brief = task.brief(Path::new("/repo/.worktrees/fix/repo"));
         assert!(brief.starts_with("# Task: Fix login\n"));
         assert!(brief.contains("Issue: https://example.com/issues/1"));
         assert!(brief.contains("- [x] Done\n- [ ] Open"));
         assert!(brief.contains("/repo/.worktrees/fix/.soi/plan.md"));
+        assert!(brief.contains("- Worktree: /repo/.worktrees/fix/repo\n- Branch: fix\n- Repository: /repo\n"));
         let template = task.plan_template();
         assert!(template.starts_with("# Fix login\n"));
         assert!(template.contains("## Description\n\nUsers get logged out."));

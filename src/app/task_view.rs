@@ -549,7 +549,7 @@ pub(super) fn open(state: &App) {
             && expander.is_expanded()
         {
             brief.set_label(&match form(&view) {
-                Ok(task) => task.brief(),
+                Ok(task) => task.brief(&view.ws.root_dir),
                 Err(e) => e,
             });
         }
@@ -1135,7 +1135,7 @@ fn poll_plan(view: &Rc<View>) {
 fn copy_brief(view: &Rc<View>) {
     match form(view) {
         Ok(task) => {
-            view.window.clipboard().set_text(&task.brief());
+            view.window.clipboard().set_text(&task.brief(&view.ws.root_dir));
             view.agent_message.set_label(if view.plan.dirty.get() {
                 "Brief copied. The plan has unsaved edits: save it so the agent reads your latest version."
             } else {
@@ -1179,7 +1179,7 @@ fn start_agent(view: &Rc<View>, preset: &crate::presets::Preset) {
                 &view.ws.root_dir,
                 tasks::agent_command(
                     preset,
-                    Some(task.brief()),
+                    Some(task.brief(&view.ws.root_dir)),
                     &task,
                     &tasks::agent_path(&state),
                 ),
