@@ -586,7 +586,7 @@ pub(super) fn replace_context(state: &App, id: Uuid) {
     {
         open.set_state(&id.to_string().to_variant());
     }
-    panel::show(state, context.agents_panel);
+    panel::show_saved(state, context.agents_panel, context.agents_width);
     restore(state, Some(&context), true);
     mark_used(state);
     save_all(shared);

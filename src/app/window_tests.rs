@@ -23,6 +23,7 @@ checks![
     restart_restores_open_windows_and_retains_closed_contexts,
     numbers_count_within_the_group_and_groups_switch,
     windows_maximize_and_zoom_is_kept,
+    the_agents_panel_keeps_its_width,
     main_tabs_keep_independent_splits_and_focus,
     pane_cycling_wraps_within_the_selected_main_tab,
     main_tab_drag_reorders_and_combines_live_layouts,
@@ -704,6 +705,39 @@ fn numbers_count_within_the_group_and_groups_switch() {
         assert_eq!(go("workspace-1"), b);
         assert_eq!(go("previous-group"), d);
         assert_eq!(go("next-group"), b);
+        window.window.close();
+    });
+}
+
+fn the_agents_panel_keeps_its_width() {
+    isolated("the_agents_panel_keeps_its_width", || {
+        let (app, shared) = application();
+        let window = new_window(&shared, None, true);
+        panel::show(&window, true);
+        let content = window
+            .agents
+            .panel
+            .parent()
+            .and_downcast::<gtk::Paned>()
+            .unwrap();
+        wait_until(|| content.width() > 0);
+        content.set_position(content.width() - 500);
+        wait_until(|| panel::width(&window) == 500);
+        save_all(&shared);
+        let id = window.id.get();
+        assert_eq!(saved_window(id).agents_width, 500);
+        window.window.close();
+
+        let restored = init_shared(&app);
+        restore_windows(&restored);
+        let window = &restored.windows()[0];
+        wait_until(|| window.agents.panel.width() > 0);
+        // Also once the window has settled.
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        wait_until(|| std::time::Instant::now() > until);
+        assert_eq!(panel::width(window), 500);
+        save_all(&restored);
+        assert_eq!(saved_window(id).agents_width, 500);
         window.window.close();
     });
 }

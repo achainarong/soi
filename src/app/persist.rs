@@ -155,7 +155,7 @@ pub(super) fn snapshot(state: &App) -> WindowSession {
         id: state.id.get(),
         closed: false,
         name: Some(state.name.borrow().clone()),
-        agents_panel: state.agents.panel.is_visible(),
+        agents_panel: state.agents.panel.get_visible(),
         sidebar,
         active: state.active.get(),
         last_used: state.last_used.get(),

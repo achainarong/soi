@@ -244,7 +244,7 @@ pub(super) fn connect(state: &App) {
 }
 
 pub(super) fn toggle(state: &App) {
-    show(state, !state.agents.panel.is_visible());
+    show(state, !state.agents.panel.get_visible());
 }
 
 pub(super) fn show(state: &App, shown: bool) {
@@ -258,6 +258,14 @@ pub(super) fn show(state: &App, shown: bool) {
     update_toggle(state);
 }
 
+/// Shows or hides the panel as saved, with its saved width (another
+/// context's: the current width isn't kept).
+pub(super) fn show_saved(state: &App, shown: bool, width: i32) {
+    state.agents.panel.set_visible(false);
+    state.agents.width.set(width);
+    show(state, shown);
+}
+
 /// The panel's width to save: as shown, or as it was last shown.
 pub(super) fn width(state: &App) -> i32 {
     remember_width(state);
@@ -268,7 +276,7 @@ fn remember_width(state: &App) {
     let Some(content) = state.agents.panel.parent().and_downcast::<gtk::Paned>() else {
         return;
     };
-    if state.agents.panel.is_visible() && content.width() > 0 && !state.agents.placing.get() {
+    if state.agents.panel.get_visible() && content.width() > 0 && !state.agents.placing.get() {
         state.agents.width.set(content.width() - content.position());
     }
 }
@@ -281,7 +289,7 @@ pub(super) fn place(state: &App) {
     let Some(content) = state.agents.panel.parent().and_downcast::<gtk::Paned>() else {
         return;
     };
-    if width <= 0 || !state.agents.panel.is_visible() {
+    if width <= 0 || !state.agents.panel.get_visible() {
         return;
     }
     if content.width() > 0 {
@@ -307,7 +315,7 @@ fn update_toggle(state: &App) {
     state
         .agents
         .toggle
-        .set_tooltip_text(Some(&if state.agents.panel.is_visible() {
+        .set_tooltip_text(Some(&if state.agents.panel.get_visible() {
             hint("Hide the agents panel")
         } else {
             hint("Show the agents panel")
