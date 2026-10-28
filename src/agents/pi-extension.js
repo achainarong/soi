@@ -16,10 +16,21 @@ export default function (pi) {
     if (manager?.getSessionFile?.()) session = manager.getSessionId?.() ?? ""
   }
 
+  // The model and how full its context is, as Pi's footer shows them.
+  let usage
+  const measure = (ctx) => {
+    const context = ctx?.getContextUsage?.()
+    const model = ctx?.model
+    if (!model || !context?.tokens) return
+    usage = { model: model.name || model.id, context: Math.round(context.tokens) }
+    if (context.contextWindow > 0) usage.window = Math.round(context.contextWindow)
+  }
+
   let last = ""
   const send = (state, message = "") => {
     const report = { tab, state, message }
     if (session) report.session = { provider: "pi", id: session }
+    if (usage) report.usage = usage
     const line = JSON.stringify(report) + "\n"
     if (line === last) return
     try {
@@ -56,12 +67,17 @@ export default function (pi) {
   pi.on("tool_execution_start", async () => {
     settle()
   })
+  pi.on("turn_end", async (_event, ctx) => {
+    measure(ctx)
+    settle()
+  })
   pi.on("agent_end", async (event) => {
     const reply = [...(event.messages ?? [])].reverse().find((m) => m.role === "assistant")
     error = reply?.stopReason === "error" ? reply.errorMessage || "Error" : ""
   })
   pi.on("agent_settled", async (event, ctx) => {
     notice(ctx)
+    measure(ctx)
     running = false
     if (event.aborted) error = ""
     settle()

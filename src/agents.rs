@@ -114,6 +114,8 @@ pub struct Agent {
     pub message: String,
     /// When the state began.
     pub since: Instant,
+    /// Its model and context size, when it reports them.
+    pub usage: Option<Usage>,
     /// Time spent working and waiting for you, before the current state.
     worked: Duration,
     waited: Duration,
@@ -128,6 +130,7 @@ impl Default for Agent {
             unseen: false,
             message: String::new(),
             since: Instant::now(),
+            usage: None,
             worked: Duration::ZERO,
             waited: Duration::ZERO,
         }
@@ -293,6 +296,155 @@ pub struct Report {
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<SessionMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
+}
+
+/// What an agent's latest reply used.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Usage {
+    /// As the agent names it, e.g. `claude-opus-5-5`.
+    pub model: String,
+    /// Tokens in its context window.
+    pub context: u64,
+    /// The window's size, when the agent knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<u64>,
+}
+
+impl Usage {
+    /// The window it reported, or else the model's known one; none when the
+    /// context is already larger (the model has a bigger window enabled).
+    pub fn window(&self) -> Option<u64> {
+        self.window
+            .or_else(|| context_window(&self.model))
+            .filter(|window| *window > 0 && *window >= self.context)
+    }
+
+    /// "Opus 5.5 · 45k context", or "… · 45k of 200k context (23%)".
+    pub fn label(&self) -> String {
+        let context = match self.window() {
+            Some(window) => format!(
+                "{} of {} context ({}%)",
+                token_count(self.context),
+                token_count(window),
+                self.context * 100 / window
+            ),
+            None => format!("{} context", token_count(self.context)),
+        };
+        format!("{} · {context}", model_name(&self.model))
+    }
+}
+
+/// Context windows by model ID, from models.dev.
+const CONTEXT_WINDOWS: &str = include_str!("agents/context-windows.tsv");
+
+/// A model's context window by its ID: as given (`claude-opus-5-5`), with a
+/// provider (`anthropic/claude-opus-5-5`), or a date
+/// (`claude-sonnet-4-5-20250929`, `…@20250929`). `[1m]` asks for 1M.
+pub fn context_window(model: &str) -> Option<u64> {
+    let model = model.trim().to_ascii_lowercase();
+    if model.ends_with("[1m]") {
+        return Some(1_000_000);
+    }
+    let model = model.rsplit('/').next().unwrap_or_default();
+    let model = model.split('@').next().unwrap_or_default();
+    let find = |id: &str| {
+        CONTEXT_WINDOWS
+            .lines()
+            .filter_map(|line| line.split_once('\t'))
+            .find(|(known, _)| *known == id)
+            .and_then(|(_, window)| window.parse().ok())
+    };
+    find(model).or_else(|| {
+        let (base, date) = model.rsplit_once('-')?;
+        (date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| find(base))
+            .flatten()
+    })
+}
+
+/// `claude-opus-5-5` → "Opus 5.5", `claude-3-5-haiku-20241022` → "Haiku
+/// 3.5"; other names stay as they are.
+pub fn model_name(model: &str) -> String {
+    let Some(rest) = model.strip_prefix("claude-") else {
+        return model.to_string();
+    };
+    let (mut names, mut version) = (Vec::new(), Vec::new());
+    for word in rest.split('-') {
+        if word.len() >= 8 && word.bytes().all(|b| b.is_ascii_digit()) {
+            // A release date.
+        } else if word.bytes().all(|b| b.is_ascii_digit()) {
+            version.push(word);
+        } else {
+            let mut chars = word.chars();
+            names.extend(
+                chars
+                    .next()
+                    .map(|c| c.to_uppercase().chain(chars).collect::<String>()),
+            );
+        }
+    }
+    let mut name = names.join(" ");
+    if !version.is_empty() {
+        name = format!("{name} {}", version.join(".")).trim().to_string();
+    }
+    name
+}
+
+/// "820", "45k", "1.2M".
+pub fn token_count(tokens: u64) -> String {
+    match tokens {
+        0..1_000 => tokens.to_string(),
+        1_000..1_000_000 => format!("{}k", tokens / 1_000),
+        _ => {
+            format!("{:.1}", tokens as f64 / 1_000_000.0)
+                .trim_end_matches(".0")
+                .to_string()
+                + "M"
+        }
+    }
+}
+
+/// How much of the transcript's end is read for the latest usage.
+const TRANSCRIPT_TAIL: u64 = 512 * 1024;
+
+/// The latest usage in a Claude Code transcript (JSON lines): its last
+/// reply in the main conversation, not a subagent's.
+pub fn claude_usage(transcript: &Path) -> Option<Usage> {
+    use std::io::{Seek, SeekFrom};
+    let mut file = fs::File::open(transcript).ok()?;
+    let len = file.metadata().ok()?.len();
+    file.seek(SeekFrom::Start(len.saturating_sub(TRANSCRIPT_TAIL)))
+        .ok()?;
+    let mut tail = Vec::new();
+    file.read_to_end(&mut tail).ok()?;
+    // The first line may be cut off; it just doesn't parse.
+    tail.split(|b| *b == b'\n').rev().find_map(|line| {
+        let entry: Value = serde_json::from_slice(line).ok()?;
+        if entry.get("type")?.as_str()? != "assistant"
+            || entry.get("isSidechain").and_then(Value::as_bool) == Some(true)
+        {
+            return None;
+        }
+        let message = entry.get("message")?;
+        // Claude Code's own stand-ins (errors, interruptions) say `<synthetic>`.
+        let model = message.get("model")?.as_str()?;
+        if model.starts_with('<') || model.contains('\0') {
+            return None;
+        }
+        let usage = message.get("usage")?;
+        let tokens = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
+        let context = tokens("input_tokens")
+            + tokens("cache_creation_input_tokens")
+            + tokens("cache_read_input_tokens")
+            + tokens("output_tokens");
+        (context > 0).then(|| Usage {
+            model: model.chars().take(100).collect(),
+            context,
+            window: None,
+        })
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -349,6 +501,10 @@ impl Report {
                 .session
                 .as_ref()
                 .is_some_and(|s| s.provider.contains('\0'))
+            || report
+                .usage
+                .as_ref()
+                .is_some_and(|u| u.model.contains('\0'))
         {
             return None;
         }
@@ -379,10 +535,15 @@ fn send(socket: &Path, report: &Report) -> io::Result<()> {
 /// Sends a report for the tab this process runs in. Outside soi it does
 /// nothing, so hooks never fail because of it.
 fn report_from_env(state: State, message: &str) -> i32 {
-    report_session_from_env(state, message, None)
+    report_session_from_env(state, message, None, None)
 }
 
-fn report_session_from_env(state: State, message: &str, session: Option<SessionMetadata>) -> i32 {
+fn report_session_from_env(
+    state: State,
+    message: &str,
+    session: Option<SessionMetadata>,
+    usage: Option<Usage>,
+) -> i32 {
     let tab = std::env::var("SOI_TAB_ID")
         .ok()
         .and_then(|id| Uuid::parse_str(&id).ok());
@@ -401,6 +562,7 @@ fn report_session_from_env(state: State, message: &str, session: Option<SessionM
         state: state.into(),
         message: message.into(),
         session,
+        usage,
     };
     match send(&socket, &report) {
         Ok(()) => 0,
@@ -438,7 +600,12 @@ pub fn claude_hook_command() -> i32 {
                     provider: "claude".into(),
                     id: id.into(),
                 });
-            report_session_from_env(state, &message, session)
+            let usage = event
+                .as_ref()
+                .and_then(|e| e.get("transcript_path"))
+                .and_then(Value::as_str)
+                .and_then(|path| claude_usage(Path::new(path)));
+            report_session_from_env(state, &message, session, usage)
         }
         None => 0,
     }
@@ -767,6 +934,7 @@ mod tests {
             state: "input".into(),
             message: "x".repeat(MAX_REPORT_BYTES),
             session: None,
+            usage: None,
         };
         assert!(Report::parse(&serde_json::to_vec(&report).unwrap()).is_none());
         report.message = "\0".into();
@@ -800,8 +968,111 @@ mod tests {
                     provider: "claude".into(),
                     id: "abc-123".into()
                 }),
+                usage: None,
             })
         );
+    }
+
+    #[test]
+    fn reads_the_latest_main_usage_from_a_claude_transcript() {
+        let dir = std::env::temp_dir().join(format!("soi-usage-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+        let reply = |model: &str, sidechain: bool, read: u64| {
+            json!({
+                "type": "assistant",
+                "isSidechain": sidechain,
+                "message": {"model": model, "usage": {
+                    "input_tokens": 2,
+                    "cache_creation_input_tokens": 100,
+                    "cache_read_input_tokens": read,
+                    "output_tokens": 50,
+                }},
+            })
+            .to_string()
+        };
+        let lines = [
+            reply("claude-sonnet-5-5", false, 1_000),
+            reply("claude-opus-5-5", false, 45_000),
+            reply("claude-haiku-5-5", true, 9_000),
+            reply("<synthetic>", false, 0),
+            json!({"type": "user", "message": {"content": "hi"}}).to_string(),
+        ];
+        fs::write(&path, lines.join("\n") + "\n").unwrap();
+        assert_eq!(
+            claude_usage(&path),
+            Some(Usage {
+                model: "claude-opus-5-5".into(),
+                context: 45_152,
+                window: None,
+            })
+        );
+        assert_eq!(claude_usage(&dir.join("missing.jsonl")), None);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn reports_carry_usage_with_or_without_a_window() {
+        let tab = Uuid::new_v4();
+        let line = |usage: &str| format!(r#"{{"tab":"{tab}","state":"done","usage":{usage}}}"#);
+        let report =
+            Report::parse(line(r#"{"model":"claude-sonnet-5-5","context":30710}"#).as_bytes());
+        assert_eq!(
+            report.and_then(|r| r.usage),
+            Some(Usage {
+                model: "claude-sonnet-5-5".into(),
+                context: 30_710,
+                window: None,
+            })
+        );
+        let report = Report::parse(
+            line(r#"{"model":"Claude Opus 5.5","context":41235,"window":200000}"#).as_bytes(),
+        );
+        assert_eq!(
+            report.and_then(|r| r.usage).and_then(|u| u.window),
+            Some(200_000)
+        );
+        assert!(Report::parse(line(r#"{"model":"a\u0000b","context":1}"#).as_bytes()).is_none());
+    }
+
+    #[test]
+    fn names_models_and_counts_tokens() {
+        assert_eq!(model_name("claude-opus-5-5"), "Opus 5.5");
+        assert_eq!(model_name("claude-sonnet-4-5-20250929"), "Sonnet 4.5");
+        assert_eq!(model_name("claude-3-5-haiku-20241022"), "Haiku 3.5");
+        assert_eq!(model_name("gpt-5"), "gpt-5");
+        assert_eq!(token_count(820), "820");
+        assert_eq!(token_count(45_152), "45k");
+        assert_eq!(token_count(1_234_567), "1.2M");
+        let mut usage = Usage {
+            model: "Claude Opus 5.5".into(),
+            context: 45_152,
+            window: None,
+        };
+        assert_eq!(usage.label(), "Claude Opus 5.5 · 45k context");
+        usage.window = Some(200_000);
+        assert_eq!(usage.label(), "Claude Opus 5.5 · 45k of 200k context (22%)");
+        usage.model = "claude-opus-5-5".into();
+        usage.window = None;
+        assert_eq!(usage.label(), "Opus 5.5 · 45k of 1M context (4%)");
+    }
+
+    #[test]
+    fn knows_context_windows_by_model_id() {
+        assert_eq!(context_window("claude-opus-5-5"), Some(1_000_000));
+        assert_eq!(context_window("anthropic/claude-haiku-4-5"), Some(200_000));
+        assert_eq!(context_window("claude-sonnet-4-5-20250929"), Some(200_000));
+        assert_eq!(context_window("claude-sonnet-4-5@20250929"), Some(200_000));
+        assert_eq!(context_window("claude-sonnet-4-5[1m]"), Some(1_000_000));
+        assert_eq!(context_window("glm-4.6"), Some(204_800));
+        assert_eq!(context_window("my-local-model"), None);
+        // Beyond the known window: a bigger one is on, size unknown.
+        let usage = Usage {
+            model: "claude-haiku-4-5".into(),
+            context: 250_000,
+            window: None,
+        };
+        assert_eq!(usage.window(), None);
     }
 
     fn agent(program: &str) -> Agent {
@@ -1003,6 +1274,7 @@ mod tests {
             state: "input".into(),
             message: "Allow edit?".into(),
             session: None,
+            usage: None,
         };
         send(&path, &report).unwrap();
         let (mut stream, _) = listener.accept().unwrap();

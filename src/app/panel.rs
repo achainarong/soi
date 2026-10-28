@@ -69,6 +69,8 @@ struct AgentRow {
     message: gtk::Label,
     /// "worked 12m · waited 3m".
     totals: gtk::Label,
+    /// "Opus 5.5 · 45k context", when the agent reports it.
+    usage: gtk::Label,
     /// Answers an agent that asks, without going there.
     reply: gtk::Entry,
 }
@@ -889,6 +891,8 @@ fn agent_row(shared: &Rc<Shared>, id: Uuid) -> AgentRow {
     message.set_lines(3);
     message.set_ellipsize(pango::EllipsizeMode::End);
     let totals = label(&["dim-label", "caption"]);
+    let usage = label(&["dim-label", "caption"]);
+    usage.set_ellipsize(pango::EllipsizeMode::End);
     let reply = gtk::Entry::builder()
         .placeholder_text("Reply (Enter sends)")
         .css_classes(["agent-reply"])
@@ -908,6 +912,7 @@ fn agent_row(shared: &Rc<Shared>, id: Uuid) -> AgentRow {
     content.append(&line);
     content.append(&message);
     content.append(&totals);
+    content.append(&usage);
     content.append(&reply);
     let body = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     body.set_margin_top(4);
@@ -931,6 +936,7 @@ fn agent_row(shared: &Rc<Shared>, id: Uuid) -> AgentRow {
         place,
         message,
         totals,
+        usage,
         reply,
     }
 }
@@ -1015,6 +1021,21 @@ fn update_row(
     let totals = totals_text(agent, now);
     row.totals.set_visible(!totals.is_empty());
     row.totals.set_label(&totals);
+    let usage = agent.usage.as_ref().map(agents::Usage::label);
+    row.usage.set_visible(usage.is_some());
+    row.usage.set_label(usage.as_deref().unwrap_or_default());
+    row.usage.set_tooltip_text(
+        agent
+            .usage
+            .as_ref()
+            .map(|u| match u.window() {
+                Some(window) => {
+                    format!("{} · {} of {window} tokens in context", u.model, u.context)
+                }
+                None => format!("{} · {} tokens in context", u.model, u.context),
+            })
+            .as_deref(),
+    );
     row.reply.set_visible(agent.state == AgentState::Input);
     if agent.unseen {
         row.row.add_css_class("unseen");

@@ -96,7 +96,7 @@ pub(in crate::app) fn listen(shared: &Rc<Shared>) {
             };
             if let (Some(shared), Some(state)) = (weak.upgrade(), AgentState::parse(&report.state))
             {
-                apply_report(&shared, (report.tab, state, report.message));
+                apply_report(&shared, (report.tab, state, report.message), report.usage);
                 if let Some(metadata) = report.session
                     && let Some(tab) = shared
                         .tabs
@@ -119,13 +119,23 @@ pub(in crate::app) fn listen(shared: &Rc<Shared>) {
         .replace(Some(ReportListener(service)));
 }
 
-fn apply_report(shared: &Rc<Shared>, (id, state, message): (Uuid, AgentState, String)) {
+fn apply_report(
+    shared: &Rc<Shared>,
+    (id, state, message): (Uuid, AgentState, String),
+    usage: Option<agents::Usage>,
+) {
     let Some(tab) = shared.tabs.borrow().get(&id).and_then(Weak::upgrade) else {
         return;
     };
     let now = Instant::now();
     let visible = is_visible(&tab);
     let mut changed = tab.agent.borrow_mut().report(state, &message, visible, now);
+    // Kept when a report leaves it out, e.g. before the first reply.
+    if let Some(usage) = usage {
+        let mut agent = tab.agent.borrow_mut();
+        changed |= agent.usage.as_ref() != Some(&usage);
+        agent.usage = Some(usage);
+    }
     // Learn the agent's program right away.
     changed |= observe(&tab, &agent_names(shared), now);
     if changed {
