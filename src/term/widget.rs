@@ -21,7 +21,8 @@ use super::keys::{self, Encoding, WordJumps};
 use super::links;
 use super::pty::{self, Event, Pty};
 use super::screen::{
-    Cell as GridCell, Color, Colors, CursorShape, Finished, Link, Progress, Term, Width, attr,
+    Cell as GridCell, Color, Colors, CursorShape, Finished, Link, MouseMotion, Progress, Term,
+    Width, attr,
 };
 use crate::theme::TerminalTheme;
 
@@ -196,6 +197,8 @@ struct Inner {
     /// cursor, which the program moves, is its other end.
     marking: Cell<Option<Pos>>,
     pointer: Cell<(f64, f64)>,
+    /// The cell whose pointer motion the program last heard about.
+    reported_cell: Cell<Option<(usize, usize)>>,
     /// The link under the mouse pointer and its absolute line.
     hovered_link: RefCell<Option<(i64, Link)>>,
     /// A redraw is scheduled for when synchronized output times out.
@@ -275,6 +278,7 @@ impl TermView {
             drag_anchor: Cell::new(None),
             marking: Cell::new(None),
             pointer: Cell::new((0.0, 0.0)),
+            reported_cell: Cell::new(None),
             hovered_link: RefCell::default(),
             sync_timer: Rc::default(),
             browse: RefCell::default(),
@@ -1346,12 +1350,14 @@ impl Inner {
         });
     }
 
-    /// Like other Linux terminals: selecting also fills the primary
-    /// selection, for middle-click paste.
-    fn copy_to_primary(&self) {
+    /// Selecting copies: to the clipboard, ready to paste anywhere, and
+    /// like other Linux terminals to the primary selection, for
+    /// middle-click paste.
+    fn copy_selection(&self) {
         if let (Some((start, end)), Some(area)) = (self.selection.get(), self.area()) {
             let text = self.term.borrow().text_between(start, end);
             if !text.is_empty() {
+                area.clipboard().set_text(&text);
                 area.primary_clipboard().set_text(&text);
             }
         }
@@ -1544,6 +1550,7 @@ impl Inner {
         };
         let col = ((x - GUTTER) / cell_w).floor().max(0.0) as usize + 1;
         let row = (y / cell_h).floor().max(0.0) as usize + 1;
+        self.reported_cell.set(Some((col, row)));
         let mut code = button;
         if state.contains(gdk::ModifierType::SHIFT_MASK) {
             code += 4;
@@ -1556,6 +1563,38 @@ impl Inner {
         }
         let end = if pressed { 'M' } else { 'm' };
         self.write(format!("\x1b[<{code};{col};{row}{end}").as_bytes());
+    }
+
+    /// Tells a program that asked (modes 1002 and 1003) where the pointer
+    /// moved, once per cell: how TUIs like opencode select by dragging.
+    fn report_motion(&self, x: f64, y: f64, state: gdk::ModifierType) {
+        let motion = self.term.borrow().modes.mouse_motion;
+        // Shift is ours: it selects in the terminal instead.
+        if motion == MouseMotion::None || state.contains(gdk::ModifierType::SHIFT_MASK) {
+            return;
+        }
+        let button = if state.contains(gdk::ModifierType::BUTTON1_MASK) {
+            0
+        } else if state.contains(gdk::ModifierType::BUTTON2_MASK) {
+            1
+        } else if state.contains(gdk::ModifierType::BUTTON3_MASK) {
+            2
+        } else if motion == MouseMotion::All {
+            3
+        } else {
+            return;
+        };
+        let (cell_w, cell_h) = {
+            let look = self.look.borrow();
+            (look.cell_w, look.cell_h)
+        };
+        let cell = (
+            ((x - GUTTER) / cell_w).floor().max(0.0) as usize + 1,
+            (y / cell_h).floor().max(0.0) as usize + 1,
+        );
+        if self.reported_cell.get() != Some(cell) {
+            self.report_mouse(button + 32, true, x, y, state);
+        }
     }
 
     /// Hands GTK the frame as render nodes: rectangles and text runs,
@@ -2024,7 +2063,7 @@ fn install_handlers(area: &TermArea, inner: &Rc<Inner>) {
                 };
                 inner.selection.set(span);
                 inner.drag_anchor.set(None);
-                inner.copy_to_primary();
+                inner.copy_selection();
                 inner.queue_draw();
             }
             1 => {
@@ -2095,17 +2134,18 @@ fn install_handlers(area: &TermArea, inner: &Rc<Inner>) {
     let weak = Rc::downgrade(inner);
     drag.connect_drag_end(move |_, _, _| {
         if let Some(inner) = weak.upgrade() {
-            inner.copy_to_primary();
+            inner.copy_selection();
         }
     });
     area.add_controller(drag);
 
     let motion = gtk::EventControllerMotion::new();
     let weak = Rc::downgrade(inner);
-    motion.connect_motion(move |_, x, y| {
+    motion.connect_motion(move |controller, x, y| {
         if let Some(inner) = weak.upgrade() {
             inner.pointer.set((x, y));
             inner.update_hover(x, y);
+            inner.report_motion(x, y, controller.current_event_state());
         }
     });
     let weak = Rc::downgrade(inner);

@@ -179,6 +179,8 @@ pub struct Modes {
     pub app_cursor: bool,
     pub bracketed_paste: bool,
     pub mouse_reporting: bool,
+    /// Which pointer motion is reported too.
+    pub mouse_motion: MouseMotion,
     pub sgr_mouse: bool,
     pub cursor_shape: CursorShape,
     /// Whether the program wants the cursor to blink (`None`: up to the
@@ -188,6 +190,16 @@ pub struct Modes {
     pub focus_events: bool,
     /// The program is drawing a frame; hold off showing it (mode 2026).
     pub synchronized: bool,
+}
+
+/// Which pointer motion a program wants reported, besides clicks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MouseMotion {
+    None,
+    /// While a button is held (mode 1002), so it can select by dragging.
+    Drags,
+    /// All of it (mode 1003).
+    All,
 }
 
 /// How keys are encoded for the program, as it asked for.
@@ -254,6 +266,7 @@ impl Default for Modes {
             app_cursor: false,
             bracketed_paste: false,
             mouse_reporting: false,
+            mouse_motion: MouseMotion::None,
             sgr_mouse: false,
             cursor_shape: CursorShape::Block,
             cursor_blink: None,
@@ -1348,7 +1361,15 @@ impl Term {
                         self.leave_alt_screen(true);
                     }
                 }
-                (true, 1000) | (true, 1002) | (true, 1003) => self.modes.mouse_reporting = on,
+                // One of these at a time, as in xterm.
+                (true, 1000 | 1002 | 1003) => {
+                    self.modes.mouse_reporting = on;
+                    self.modes.mouse_motion = match (on, mode) {
+                        (true, 1002) => MouseMotion::Drags,
+                        (true, 1003) => MouseMotion::All,
+                        _ => MouseMotion::None,
+                    };
+                }
                 (true, 1004) => self.modes.focus_events = on,
                 (true, 1006) => self.modes.sgr_mouse = on,
                 (true, 2004) => self.modes.bracketed_paste = on,
@@ -1367,7 +1388,11 @@ impl Term {
             (true, 7) => self.modes.autowrap,
             (true, 25) => self.modes.cursor_visible,
             (true, 47 | 1047 | 1049) => self.alt_active(),
-            (true, 1000 | 1002) => self.modes.mouse_reporting,
+            (true, 1000) => {
+                self.modes.mouse_reporting && self.modes.mouse_motion == MouseMotion::None
+            }
+            (true, 1002) => self.modes.mouse_motion == MouseMotion::Drags,
+            (true, 1003) => self.modes.mouse_motion == MouseMotion::All,
             (true, 1004) => self.modes.focus_events,
             (true, 1006) => self.modes.sgr_mouse,
             (true, 2004) => self.modes.bracketed_paste,
@@ -2481,6 +2506,22 @@ mod tests {
             (0, 8, "https://real.target")
         );
         assert_eq!(term.link_at(1, 9), None);
+    }
+
+    #[test]
+    fn mouse_modes_say_which_motion_is_reported() {
+        let modes = |input: &str| run(10, 1, input).modes;
+        assert_eq!(modes("\x1b[?1000h").mouse_motion, MouseMotion::None);
+        assert_eq!(modes("\x1b[?1002h").mouse_motion, MouseMotion::Drags);
+        assert_eq!(modes("\x1b[?1003h").mouse_motion, MouseMotion::All);
+        // The last one asked for wins, as in xterm.
+        assert_eq!(
+            modes("\x1b[?1003h\x1b[?1002h").mouse_motion,
+            MouseMotion::Drags
+        );
+        let off = modes("\x1b[?1002h\x1b[?1002l");
+        assert!(!off.mouse_reporting);
+        assert_eq!(off.mouse_motion, MouseMotion::None);
     }
 
     #[test]
