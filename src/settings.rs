@@ -15,6 +15,7 @@ use crate::theme::key_values;
 const PROFILE: &str = "profile";
 const THEME: &str = "theme";
 const FONT: &str = "font";
+const APP_FONT: &str = "app-font";
 const OPACITY: &str = "background-opacity";
 const SHELL: &str = "shell";
 const SCROLLBACK: &str = "scrollback-lines";
@@ -38,6 +39,9 @@ pub struct Settings {
     pub theme: Option<String>,
     /// Pango font description, e.g. `JetBrainsMono Nerd Font Bold 12`.
     pub font: Option<String>,
+    /// The font of everything but the terminals (sidebar, tabs, menus,
+    /// Settings), as a Pango font description; unset: the system's.
+    pub app_font: Option<String>,
     pub background_opacity: Option<f64>,
     /// Command for new terminals, split on whitespace.
     pub shell: Option<String>,
@@ -281,6 +285,7 @@ impl Settings {
         Self {
             theme: get(THEME),
             font: get(FONT),
+            app_font: get(APP_FONT),
             background_opacity: get(OPACITY).and_then(|v| v.parse().ok()),
             shell: get(SHELL),
             scrollback: get(SCROLLBACK).and_then(|v| v.parse().ok()),
@@ -294,10 +299,11 @@ impl Settings {
         }
     }
 
-    fn values(&self) -> [(&'static str, Option<String>); 12] {
+    fn values(&self) -> [(&'static str, Option<String>); 13] {
         [
             (THEME, self.theme.clone()),
             (FONT, self.font.clone()),
+            (APP_FONT, self.app_font.clone()),
             (OPACITY, self.background_opacity.map(|o| format!("{o:.2}"))),
             (SHELL, self.shell.clone()),
             (SCROLLBACK, self.scrollback.map(|s| s.to_string())),
@@ -373,6 +379,7 @@ mod tests {
             theme: Some("builtin:Nord".into()),
             background_opacity: Some(0.8),
             shell: Some("fish -l".into()),
+            app_font: Some("Inter 12".into()),
             ..Default::default()
         };
         let text = update_lines(

@@ -247,9 +247,44 @@ pub(in crate::app) fn settings_form(state: &App) -> gtk::Widget {
     font_row.append(&font_button);
     font_row.append(&reset_font);
     add_row(
-        "Font",
+        "Terminal font",
         font_row.upcast_ref(),
         "Reset goes back to your terminal's font.",
+    );
+
+    // App font: everything but the terminals.
+    let app_font_button = gtk::FontDialogButton::new(Some(gtk::FontDialog::new()));
+    app_font_button.set_font_desc(&app_font());
+    let resetting = Rc::new(Cell::new(false));
+    let weak = Rc::downgrade(state);
+    let guard = resetting.clone();
+    app_font_button.connect_font_desc_notify(move |button| {
+        if let (false, Some(state), Some(font)) = (guard.get(), weak.upgrade(), button.font_desc())
+        {
+            update_settings(&state, |s| s.app_font = Some(font.to_str().into()));
+        }
+    });
+    let reset_app_font = gtk::Button::with_label("Reset");
+    let weak = Rc::downgrade(state);
+    let button_ref = app_font_button.downgrade();
+    reset_app_font.connect_clicked(move |_| {
+        let (Some(state), Some(button)) = (weak.upgrade(), button_ref.upgrade()) else {
+            return;
+        };
+        // First back to the system's font, then show which one that is.
+        update_settings(&state, |s| s.app_font = None);
+        resetting.set(true);
+        button.set_font_desc(&app_font());
+        resetting.set(false);
+    });
+    let app_font_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    app_font_button.set_hexpand(true);
+    app_font_row.append(&app_font_button);
+    app_font_row.append(&reset_app_font);
+    add_row(
+        "App font",
+        app_font_row.upcast_ref(),
+        "The sidebar, tabs, menus and Settings. Reset goes back to the system's font.",
     );
 
     // Opacity

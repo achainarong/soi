@@ -277,7 +277,40 @@ pub(super) fn apply_settings(shared: &Shared) {
         }
     }
     *shared.theme.borrow_mut() = theme;
+    apply_app_font(&shared.settings.borrow());
     apply_colors(shared);
+}
+
+/// The font of everything but the terminals, which draw their own: the
+/// chosen one, or the system's when none is.
+fn apply_app_font(settings: &Settings) {
+    thread_local! {
+        /// The font we set, if any: GTK can't tell ours from the system's.
+        static SET: RefCell<Option<String>> = const { RefCell::new(None) };
+    }
+    let Some(gtk_settings) = gtk::Settings::default() else {
+        return;
+    };
+    let font = settings.app_font.clone();
+    // Only on a change: either one restyles every widget.
+    if SET.with_borrow(|set| *set == font) {
+        return;
+    }
+    match &font {
+        Some(font) => gtk_settings.set_gtk_font_name(Some(font)),
+        // Back to the system's font, which GTK reads again from now on.
+        None => gtk_settings.reset_property("gtk-font-name"),
+    }
+    SET.set(font);
+}
+
+/// The font everything but the terminals uses now.
+pub(super) fn app_font() -> pango::FontDescription {
+    gtk::Settings::default()
+        .and_then(|settings| settings.gtk_font_name())
+        .map_or_else(pango::FontDescription::new, |name| {
+            pango::FontDescription::from_string(&name)
+        })
 }
 
 pub(super) fn update_settings(state: &App, change: impl FnOnce(&mut Settings)) {

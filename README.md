@@ -114,8 +114,9 @@ Other ways to install are under [Install](#install).
   Windows Terminal or Ghostty), and of all of a workspace's tabs in the
   sidebar.
 - **Looks like your terminal**: colors, font and shell come from your
-  Konsole or Ghostty settings; or pick a color scheme, font, opacity and
-  more per **profile**.
+  Konsole or Ghostty settings; or pick a color scheme, terminal font,
+  opacity and more per **profile**. The rest of the app (sidebar, tabs,
+  menus) uses the system font, or an app font you pick in Settings.
 - **Agents panel** for coding agents (Claude Code, OpenCode, Pi, Codex, …):
   every agent in every window with its state (working, needs input, done),
   one click to jump to it. When an agent stops while you look elsewhere,
