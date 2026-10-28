@@ -366,55 +366,68 @@ pub(super) fn create(state: &App, group: Option<Uuid>) {
         "",
     );
     ticket.set_placeholder_text(Some("PROJ-123"));
-    let issue = field(&content, "Issue link (optional reference)", "");
     let description = text_area(&content, "Description (optional)", 80);
-    let checklist = text_area(&content, "Checklist (optional; one item per line)", 60);
-    let repository = field(&content, "Repository", &path_text(&root));
+    let acceptance = text_area(&content, "Acceptance criteria (optional)", 60);
     let branch = field(&content, "New branch", "");
-    let base = field(
-        &content,
-        "Base branch (optional; a branch, tag or commit)",
-        "",
-    );
-    base.set_placeholder_text(Some("What the repository has checked out when left empty"));
-    let destination = field(
-        &content,
-        "Worktree directory (optional; relative to repository or absolute)",
-        "",
-    );
-    destination.set_placeholder_text(Some(".worktrees/<branch>/<repository> when left empty"));
-    note(&content, "Plan");
-    let plan_mode = gtk::DropDown::from_strings(&[
-        "Create a new plan from these details",
-        "Link an existing plan",
-        "No plan",
-    ]);
-    content.append(&plan_mode);
-    let plan = field(
-        &content,
-        "Plan file (optional; relative to the new worktree; never overwritten)",
-        "",
-    );
-    plan.set_placeholder_text(Some(
-        "~/.local/state/soi/plans/<project>/<ticket or id>-<task>/plan.md",
-    ));
+    let repository = field(&content, "Repository", &path_text(&root));
+    let requests = requests::Picker::new(&root, &[], &[], true, chosen.as_deref());
+    if let Some(row) = requests.take_collection_row() {
+        content.append(&row);
+    }
     let presets = Rc::new(crate::presets::load());
     let names: Vec<&str> = std::iter::once("Shell only")
         .chain(presets.iter().map(|preset| preset.name.as_str()))
         .collect();
     let agent = gtk::DropDown::from_strings(&names);
     agent.set_tooltip_text(Some("Set these up in Settings ▸ Agents"));
-    note(&content, "Optional agent");
-    content.append(&agent);
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    row.append(&gtk::Label::new(Some("Agent")));
+    row.append(&agent);
+    content.append(&row);
+    // The rest has sensible defaults, so it stays folded away.
+    let advanced = gtk::Expander::new(Some("Advanced settings"));
+    let more = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    more.set_margin_top(8);
+    advanced.set_child(Some(&more));
+    content.append(&advanced);
+    let issue = field(&more, "Issue link (optional reference)", "");
+    let checklist = text_area(&more, "Checklist (optional; one item per line)", 60);
+    let base = field(
+        &more,
+        "Base branch (optional; a branch, tag or commit)",
+        "",
+    );
+    base.set_placeholder_text(Some("What the repository has checked out when left empty"));
+    let destination = field(
+        &more,
+        "Worktree directory (optional; relative to repository or absolute)",
+        "",
+    );
+    destination.set_placeholder_text(Some(".worktrees/<branch>/<repository> when left empty"));
+    note(&more, "Plan");
+    let plan_mode = gtk::DropDown::from_strings(&[
+        "Create a new plan from these details",
+        "Link an existing plan",
+        "No plan",
+    ]);
+    more.append(&plan_mode);
+    let plan = field(
+        &more,
+        "Plan file (optional; relative to the new worktree; never overwritten)",
+        "",
+    );
+    plan.set_placeholder_text(Some(
+        "~/.local/state/soi/plans/<project>/<ticket or id>-<task>/plan.md",
+    ));
+    note(&more, "Agent model");
     let model = model_entry();
     model.set_sensitive(false);
-    content.append(&model);
+    more.append(&model);
     let with_brief =
         gtk::CheckButton::with_label("Give the agent the task brief as its first prompt");
     with_brief.set_sensitive(false);
-    content.append(&with_brief);
-    let requests = requests::Picker::new(&root, &[], &[], true, chosen.as_deref());
-    content.append(&requests.widget);
+    more.append(&with_brief);
+    more.append(&requests.widget);
     // Project skills and commands come with the repository chosen.
     let weak_requests = Rc::downgrade(&requests);
     repository.connect_changed(move |entry| {
@@ -458,17 +471,18 @@ pub(super) fn create(state: &App, group: Option<Uuid>) {
         if !repository.is_absolute() { error.set_label("Choose an existing Git repository using its absolute path."); return; }
         let issue = match crate::tasks::validate_issue(issue.text().as_str()) {
             Ok(issue) => issue,
-            Err(e) => { error.set_label(&e); return; }
+            Err(e) => { advanced.set_expanded(true); error.set_label(&e); return; }
         };
         let ticket = match crate::tasks::validate_ticket(ticket.text().as_str()) {
             Ok(ticket) => ticket,
             Err(e) => { error.set_label(&e); return; }
         };
         let description = buffer_text(&description).trim_end().to_string();
+        let acceptance = buffer_text(&acceptance).trim_end().to_string();
         let checklist = crate::tasks::parse_checklist(&buffer_text(&checklist));
         let (skills, commands, collection) = (requests.skills(), requests.commands(), requests.collection());
         let (plan_mode, plan) = (plan_mode.selected(), plan.text().to_string());
-        if plan_mode == 1 && plan.trim().is_empty() { error.set_label("Enter the existing plan's path."); return; }
+        if plan_mode == 1 && plan.trim().is_empty() { advanced.set_expanded(true); error.set_label("Enter the existing plan's path."); return; }
         let preset = (agent.selected() as usize).checked_sub(1).and_then(|i| presets.get(i))
             .map(|preset| with_model(preset, &model));
         let with_brief = with_brief.is_sensitive() && with_brief.is_active();
@@ -490,6 +504,7 @@ pub(super) fn create(state: &App, group: Option<Uuid>) {
             task.issue = issue;
             task.ticket = ticket;
             task.description = description;
+            task.acceptance = acceptance;
             task.checklist = checklist;
             task.skills = skills;
             task.commands = commands;

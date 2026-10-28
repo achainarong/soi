@@ -165,6 +165,14 @@ impl Picker {
         Some(self.collections.get(i)?.name.clone())
     }
 
+    /// Takes the collection dropdown's row out of `widget`, to be shown
+    /// apart from the toggles.
+    pub(super) fn take_collection_row(&self) -> Option<gtk::Widget> {
+        let row = self.collection.as_ref()?.parent()?;
+        self.widget.remove(&row);
+        Some(row)
+    }
+
     /// Lists what is found for another repository, keeping what is pressed.
     pub(super) fn set_repository(&self, repository: &Path) {
         self.repository.replace(repository.to_path_buf());
