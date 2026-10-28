@@ -446,9 +446,10 @@ fn refresh(state: &Rc<Page>, selected: usize) {
     let names: Vec<String> = state.list.borrow().iter().map(label).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     state.names.splice(0, state.names.n_items(), &names);
-    state
-        .dropdown
-        .set_selected(selected.min(names.len().saturating_sub(1)) as u32);
+    // The handler skips this change, so the editor is told here which one.
+    let selected = selected.min(names.len().saturating_sub(1));
+    state.current.set(selected);
+    state.dropdown.set_selected(selected as u32);
     state.updating.set(false);
     state.dropdown.set_sensitive(!names.is_empty());
     state.delete.set_sensitive(!names.is_empty());

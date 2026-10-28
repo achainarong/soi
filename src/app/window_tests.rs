@@ -1936,6 +1936,21 @@ fn skills_commands_and_collections_are_picked_by_clicking() {
             let names = dropdown.model().and_downcast::<gtk::StringList>().unwrap();
             assert_eq!(names.string(0).as_deref(), Some("C++ (default)"));
 
+            // A second one is named apart from the first.
+            find::<gtk::Button>(&page, &|b| b.label().as_deref() == Some("New collection"))
+                .unwrap()
+                .emit_clicked();
+            assert_eq!(dropdown.selected(), 1);
+            let name = find::<gtk::Entry>(&page, &|_| true).unwrap();
+            assert_eq!(name.text(), "New collection 2");
+            name.set_text("Terraform");
+            let list = crate::collections::load();
+            assert_eq!(list.len(), 2);
+            assert_eq!(list[0].name, "C++");
+            assert_eq!(list[1].name, "Terraform");
+            assert!(list[1].skills.is_empty());
+            assert_eq!(names.string(1).as_deref(), Some("Terraform"));
+
             // The default is chosen for a new task, toggles and all.
             let default = crate::collections::default_name(&crate::collections::load());
             let picker = super::requests::Picker::new(&home, &[], &[], true, default.as_deref());
