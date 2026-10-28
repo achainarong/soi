@@ -371,7 +371,9 @@ pub(super) fn collections_page() -> gtk::Widget {
         current: Cell::new(0),
         updating: Cell::new(false),
     });
-    refresh(&state, 0);
+    // Open on the default, so it's seen first.
+    let default = state.list.borrow().iter().position(|c| c.default);
+    refresh(&state, default.unwrap_or(0));
 
     let weak = Rc::downgrade(&state);
     state.dropdown.connect_selected_notify(move |dropdown| {

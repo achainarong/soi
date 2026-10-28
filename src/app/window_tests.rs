@@ -2356,6 +2356,16 @@ fn skills_commands_and_collections_are_picked_by_clicking() {
             assert!(list[1].skills.is_empty());
             assert_eq!(names.string(1).as_deref(), Some("Terraform"));
 
+            // The page opens on the default, wherever it is in the list.
+            let mut list = crate::collections::load();
+            crate::collections::set_default(&mut list, Some(1));
+            crate::collections::save(&list).unwrap();
+            let reopened = super::requests::collections_page();
+            let shown = find::<gtk::DropDown>(&reopened, &|_| true).unwrap();
+            assert_eq!(shown.selected(), 1);
+            crate::collections::set_default(&mut list, Some(0));
+            crate::collections::save(&list).unwrap();
+
             // The default is chosen for a new task, toggles and all.
             let default = crate::collections::default_name(&crate::collections::load());
             let picker = super::requests::Picker::new(&home, &[], &[], true, default.as_deref());
