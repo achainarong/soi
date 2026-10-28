@@ -15,6 +15,7 @@ checks![
     sidebar_names_rename_inline_and_support_commit_cancel_and_empty_input,
     inline_rename_commits_on_focus_loss_and_group_arrows_still_toggle,
     new_windows_are_saved_immediately,
+    tasks_menu_items_with_shortcuts_get_a_hover_hint,
     closing_a_window_retains_its_context,
     saved_windows_open_in_place,
     starting_again_brings_back_a_saved_window,
@@ -432,6 +433,35 @@ fn new_windows_are_saved_immediately() {
         );
         second.window.close();
         first.window.close();
+    });
+}
+
+fn tasks_menu_items_with_shortcuts_get_a_hover_hint() {
+    isolated("tasks_menu_items_with_shortcuts_get_a_hover_hint", || {
+        let (_app, shared) = application();
+        let state = new_window(&shared, None, true);
+        let menu = descendants(state.window.upcast_ref())
+            .into_iter()
+            .filter_map(|widget| widget.downcast::<gtk::MenuButton>().ok())
+            .find(|button| button.label().as_deref() == Some("Tasks"))
+            .and_then(|button| button.popover())
+            .expect("the Tasks menu");
+        let has_hint = |text: &str| {
+            let item = descendants(menu.upcast_ref())
+                .into_iter()
+                .find(|widget| {
+                    widget.type_().name() == "GtkModelButton"
+                        && widget.property::<Option<String>>("text").as_deref() == Some(text)
+                })
+                .unwrap_or_else(|| panic!("no menu item {text:?}"));
+            descendants(&item)
+                .iter()
+                .any(|widget| widget.is::<gtk::Popover>())
+        };
+        assert!(has_hint("Task details…"));
+        assert!(has_hint("Toggle plan preview"));
+        assert!(!has_hint("New task worktree…"));
+        state.window.close();
     });
 }
 
