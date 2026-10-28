@@ -20,7 +20,7 @@ checks![
     sidebar_names_rename_inline_and_support_commit_cancel_and_empty_input,
     inline_rename_commits_on_focus_loss_and_group_arrows_still_toggle,
     new_windows_are_saved_immediately,
-    tasks_menu_items_with_shortcuts_get_a_hover_hint,
+    tasks_menu_items_show_their_shortcuts,
     closing_a_window_retains_its_context,
     saved_windows_open_in_place,
     starting_again_brings_back_a_saved_window,
@@ -639,31 +639,31 @@ fn new_windows_are_saved_immediately() {
     });
 }
 
-fn tasks_menu_items_with_shortcuts_get_a_hover_hint() {
-    isolated("tasks_menu_items_with_shortcuts_get_a_hover_hint", || {
+fn tasks_menu_items_show_their_shortcuts() {
+    isolated("tasks_menu_items_show_their_shortcuts", || {
         let (_app, shared) = application();
         let state = new_window(&shared, None, true);
-        let menu = descendants(state.window.upcast_ref())
-            .into_iter()
-            .filter_map(|widget| widget.downcast::<gtk::MenuButton>().ok())
-            .find(|button| button.label().as_deref() == Some("Tasks"))
-            .and_then(|button| button.popover())
-            .expect("the Tasks menu");
-        let has_hint = |text: &str| {
-            let item = descendants(menu.upcast_ref())
-                .into_iter()
-                .find(|widget| {
-                    widget.type_().name() == "GtkModelButton"
-                        && widget.property::<Option<String>>("text").as_deref() == Some(text)
+        let accel = |label: &str| {
+            let menu = &state.task_menu;
+            (0..menu.n_items())
+                .find(|&i| {
+                    menu.item_attribute_value(i, "label", None)
+                        .and_then(|v| v.get::<String>())
+                        .as_deref()
+                        == Some(label)
                 })
-                .unwrap_or_else(|| panic!("no menu item {text:?}"));
-            descendants(&item)
-                .iter()
-                .any(|widget| widget.is::<gtk::Popover>())
+                .and_then(|i| menu.item_attribute_value(i, "accel", None))
+                .and_then(|v| v.get::<String>())
         };
-        assert!(has_hint("Task details…"));
-        assert!(has_hint("Toggle plan preview"));
-        assert!(!has_hint("New task worktree…"));
+        let default = |id| crate::keybindings::binding(id).unwrap().default_accel();
+        assert_eq!(accel("New task worktree…").as_deref(), Some(default("task-new")));
+        assert_eq!(accel("Inspect changes…").as_deref(), Some(default("task-changes")));
+        // A changed shortcut shows at once; one turned off shows nothing.
+        shared.keybindings.borrow_mut().set("task-history", "<Alt>h");
+        shared.keybindings.borrow_mut().set("task-archive", "");
+        reload_shortcuts(&shared);
+        assert_eq!(accel("Session history…").as_deref(), Some("<Alt>h"));
+        assert_eq!(accel("Archived workspaces…"), None);
         state.window.close();
     });
 }

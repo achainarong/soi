@@ -90,6 +90,29 @@ fn output(directory: &Path, args: &[&str]) -> Result<Output, String> {
     })
 }
 
+/// The checkout `directory` is in, and its branch (a short commit when
+/// detached), from the files alone: no git runs, so the GTK thread may ask.
+pub fn checkout(directory: &Path) -> Option<(PathBuf, Option<String>)> {
+    let (root, dot) = directory
+        .ancestors()
+        .map(|dir| (dir, dir.join(".git")))
+        .find(|(_, dot)| dot.exists())?;
+    // A worktree's `.git` is a file: `gitdir: <its git directory>`.
+    let git_dir = if dot.is_file() {
+        let text = std::fs::read_to_string(&dot).ok()?;
+        root.join(text.strip_prefix("gitdir:")?.trim())
+    } else {
+        dot
+    };
+    let head = std::fs::read_to_string(git_dir.join("HEAD")).unwrap_or_default();
+    let head = head.trim();
+    let branch = match head.strip_prefix("ref: refs/heads/") {
+        Some(branch) => Some(branch.to_string()),
+        None => head.get(..7).map(str::to_string),
+    };
+    Some((root.to_path_buf(), branch.filter(|b| !b.is_empty())))
+}
+
 pub fn repository(directory: &Path) -> Result<PathBuf, String> {
     let root = run(directory, &["rev-parse", "--show-toplevel"])?;
     std::fs::canonicalize(root.trim_end_matches('\n'))
@@ -455,6 +478,41 @@ pub fn changes(directory: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checkouts_and_branches_are_read_from_files() {
+        let root = std::env::temp_dir().join(format!("soi-checkout-{}", uuid::Uuid::new_v4()));
+        let inner = root.join("src/deep");
+        std::fs::create_dir_all(&inner).unwrap();
+        assert_eq!(checkout(&inner), None);
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/feature/login\n").unwrap();
+        assert_eq!(
+            checkout(&inner),
+            Some((root.clone(), Some("feature/login".into())))
+        );
+        std::fs::write(root.join(".git/HEAD"), "0123456789abcdef\n").unwrap();
+        assert_eq!(
+            checkout(&root),
+            Some((root.clone(), Some("0123456".into())))
+        );
+        // A worktree points to its own git directory.
+        let worktree = root.join("wt");
+        let git_dir = root.join(".git/worktrees/wt");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        std::fs::create_dir(&worktree).unwrap();
+        std::fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", git_dir.display()),
+        )
+        .unwrap();
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/fix\n").unwrap();
+        assert_eq!(
+            checkout(&worktree),
+            Some((worktree.clone(), Some("fix".into())))
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn visibility_treats_filenames_as_literal_paths() {

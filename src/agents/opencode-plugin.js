@@ -73,10 +73,12 @@ const reporter = (describe) => {
   // Busy sessions (subagents have their own) and open questions.
   const busy = new Set()
   let asking = 0
+  // What the main session said last: what it did.
+  let said = ""
   const settle = () => {
     if (asking > 0) return
     if (busy.size > 0) send("working")
-    else send("done")
+    else send("done", said)
   }
 
   const asked = (message) => {
@@ -90,6 +92,11 @@ const reporter = (describe) => {
 
   // Subagents' sessions have their own context.
   const isMain = (id) => id && !children.has(id) && (!main || id === main)
+  // 1.x: the user's messages have text parts too.
+  const replies = new Set()
+  const spoke = (id, text) => {
+    if (isMain(id) && text?.trim()) said = text.trim().slice(0, 1000)
+  }
   const used = (id, tokens) => {
     if (!isMain(id) || !tokens) return
     const context =
@@ -116,6 +123,7 @@ const reporter = (describe) => {
       // 2.x: one run of the agent.
       case "session.execution.started":
         mainOf(p.sessionID)
+        if (busy.size === 0) said = ""
         busy.add(p.sessionID)
         settle()
         break
@@ -129,6 +137,14 @@ const reporter = (describe) => {
         break
       case "session.step.ended":
         used(p.sessionID, p.tokens)
+        break
+      case "session.text.ended":
+        spoke(p.sessionID, p.text)
+        break
+      // 1.x: the reply's text, as it grows.
+      case "message.part.updated":
+        if (p.part?.type === "text" && replies.has(p.part.messageID))
+          spoke(p.part.sessionID, p.part.text)
         break
       case "session.execution.failed": {
         busy.delete(p.sessionID)
@@ -149,7 +165,10 @@ const reporter = (describe) => {
       case "session.status": {
         mainOf(p.sessionID)
         const status = p.status?.type
-        if (status === "busy" || status === "retry") busy.add(p.sessionID)
+        if (status === "busy" || status === "retry") {
+          if (busy.size === 0) said = ""
+          busy.add(p.sessionID)
+        }
         else if (status === "idle") busy.delete(p.sessionID)
         settle()
         break
@@ -157,6 +176,7 @@ const reporter = (describe) => {
       case "message.updated": {
         const info = p.info
         if (info?.role !== "assistant" || !isMain(info.sessionID)) break
+        replies.add(info.id)
         choose(info.providerID, info.modelID)
         used(info.sessionID, info.tokens)
         break

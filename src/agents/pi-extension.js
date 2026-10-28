@@ -48,11 +48,13 @@ export default function (pi) {
   let running = false
   let asking = 0
   let error = ""
+  // What it said last: what it did.
+  let said = ""
   const settle = () => {
     if (asking > 0) return
     if (running) send("working")
     else if (error) send("input", error)
-    else send("done")
+    else send("done", said)
   }
 
   pi.on("session_start", async (_event, ctx) => {
@@ -62,6 +64,7 @@ export default function (pi) {
     notice(ctx)
     running = true
     error = ""
+    said = ""
     settle()
   })
   pi.on("tool_execution_start", async () => {
@@ -74,6 +77,12 @@ export default function (pi) {
   pi.on("agent_end", async (event) => {
     const reply = [...(event.messages ?? [])].reverse().find((m) => m.role === "assistant")
     error = reply?.stopReason === "error" ? reply.errorMessage || "Error" : ""
+    const text = (reply?.content ?? [])
+      .filter((part) => part.type === "text")
+      .map((part) => part.text)
+      .join("\n")
+      .trim()
+    if (text) said = text.slice(0, 1000)
   })
   pi.on("agent_settled", async (event, ctx) => {
     notice(ctx)

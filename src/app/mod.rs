@@ -291,6 +291,8 @@ struct State {
     window_label: gtk::Label,
     /// The window switcher's contents (see `fill_switcher`).
     window_list: gtk::Box,
+    /// The Tasks menu (see `fill_task_menu`).
+    task_menu: gio::Menu,
     /// The window's keyboard shortcuts, rebuilt when they're changed.
     shortcuts: RefCell<Option<gtk::ShortcutController>>,
     drop_hint: RefCell<Option<(gtk::ListBoxRow, &'static str)>>,

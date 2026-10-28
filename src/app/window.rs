@@ -98,29 +98,12 @@ pub(super) fn new_window(shared: &Rc<Shared>, session: Option<&WindowSession>, f
         .build();
     window.set_child(Some(&main));
     toolbar.append(&agents.toggle);
-    let task_button = gtk::MenuButton::builder().label("Tasks").build();
+    // Filled by `fill_task_menu`, again whenever shortcuts change.
     let task_menu = gio::Menu::new();
-    let task_items = [
-        ("New task worktree…", "win.task-new", None),
-        ("Task details…", "win.task-context", Some("task-details")),
-        ("Session history…", "win.task-history", None),
-        ("Archived workspaces…", "win.task-archive", None),
-        ("Inspect changes…", "win.task-changes", None),
-        (
-            "Toggle plan preview",
-            "win.task-preview",
-            Some("toggle-plan"),
-        ),
-    ];
-    for (label, action, _) in task_items {
-        task_menu.append(Some(label), Some(action));
-    }
-    task_button.set_menu_model(Some(&task_menu));
-    let task_bindings: Vec<_> = task_items
-        .iter()
-        .filter_map(|&(label, _, id)| Some((label, id?)))
-        .collect();
-    hint_menu_shortcuts(shared, &task_button, &task_bindings);
+    let task_button = gtk::MenuButton::builder()
+        .label("Tasks")
+        .menu_model(&task_menu)
+        .build();
     toolbar.append(&task_button);
 
     let state: App = Rc::new(State {
@@ -147,6 +130,7 @@ pub(super) fn new_window(shared: &Rc<Shared>, session: Option<&WindowSession>, f
         ),
         window_button,
         window_label,
+        task_menu,
         window_list,
         shortcuts: RefCell::default(),
         profile_slot: gtk::Box::new(gtk::Orientation::Horizontal, 0),
@@ -266,87 +250,28 @@ pub(super) fn new_window(shared: &Rc<Shared>, session: Option<&WindowSession>, f
     state
 }
 
-/// How long the pointer rests on a menu item before its shortcut shows.
-const SHORTCUT_HINT_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
+/// The Tasks menu's items: label, window action and keybinding id.
+const TASK_ITEMS: [(&str, &str, &str); 6] = [
+    ("New task worktree…", "win.task-new", "task-new"),
+    ("Task details…", "win.task-context", "task-details"),
+    ("Session history…", "win.task-history", "task-history"),
+    ("Archived workspaces…", "win.task-archive", "task-archive"),
+    ("Inspect changes…", "win.task-changes", "task-changes"),
+    ("Toggle plan preview", "win.task-preview", "toggle-plan"),
+];
 
-/// Shows a menu item's current shortcut beside it once the pointer has
-/// rested on it, so people can learn the keys from the menu. `bindings`
-/// pairs the items' labels with keybinding ids.
-fn hint_menu_shortcuts(
-    shared: &Rc<Shared>,
-    button: &gtk::MenuButton,
-    bindings: &[(&str, &'static str)],
-) {
-    let Some(menu) = button.popover() else { return };
-    let pending: Rc<RefCell<Option<glib::SourceId>>> = Rc::default();
-    let shown: Rc<RefCell<Option<gtk::Popover>>> = Rc::default();
-    let hide = {
-        let (pending, shown) = (pending.clone(), shown.clone());
-        move || {
-            if let Some(source) = pending.take() {
-                source.remove();
-            }
-            if let Some(hint) = shown.take() {
-                hint.popdown();
-            }
+/// Fills the Tasks menu, each item showing its current shortcut.
+pub(super) fn fill_task_menu(state: &App) {
+    let keys = state.shared.keybindings.borrow();
+    state.task_menu.remove_all();
+    for (label, action, id) in TASK_ITEMS {
+        let item = gio::MenuItem::new(Some(label), Some(action));
+        // The menu has room for one key; the first stands for the rest.
+        if let Some(accel) = keybindings::accels(keys.get(id)).next() {
+            item.set_attribute_value("accel", Some(&accel.to_variant()));
         }
-    };
-    for item in descendants(menu.upcast_ref()) {
-        // The menu's items are private GtkModelButtons; only their text
-        // tells them apart.
-        if item.type_().name() != "GtkModelButton" {
-            continue;
-        }
-        let text = item.property::<Option<String>>("text").unwrap_or_default();
-        let Some(&(_, id)) = bindings.iter().find(|(label, _)| *label == text) else {
-            continue;
-        };
-        let label = gtk::Label::new(None);
-        label.add_css_class("caption");
-        let hint = gtk::Popover::builder()
-            .child(&label)
-            .position(gtk::PositionType::Right)
-            .autohide(false)
-            .has_arrow(false)
-            .can_focus(false)
-            .build();
-        hint.set_parent(&item);
-        item.connect_destroy({
-            let hint = hint.clone();
-            move |_| hint.unparent()
-        });
-        let motion = gtk::EventControllerMotion::new();
-        let weak = Rc::downgrade(shared);
-        let (pending_now, shown_now, hide_now) = (pending.clone(), shown.clone(), hide.clone());
-        motion.connect_enter(move |_, _, _| {
-            hide_now();
-            let (weak, pending, shown, hint, label) = (
-                weak.clone(),
-                pending_now.clone(),
-                shown_now.clone(),
-                hint.clone(),
-                label.clone(),
-            );
-            let source = glib::timeout_add_local_once(SHORTCUT_HINT_DELAY, move || {
-                // It has fired, so there's nothing left to cancel.
-                pending.take();
-                let Some(shared) = weak.upgrade() else { return };
-                // Read now: the shortcut may have been changed in Settings.
-                let accel = shared.keybindings.borrow().get(id).to_string();
-                if accel.is_empty() {
-                    return;
-                }
-                label.set_label(&accel_label(&accel));
-                hint.popup();
-                shown.replace(Some(hint));
-            });
-            pending_now.replace(Some(source));
-        });
-        let hide_now = hide.clone();
-        motion.connect_leave(move |_| hide_now());
-        item.add_controller(motion);
+        state.task_menu.append_item(&item);
     }
-    menu.connect_closed(move |_| hide());
 }
 
 /// `widget`'s children, their children, and so on.

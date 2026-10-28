@@ -436,10 +436,11 @@ fn command_finished(shared: &Rc<Shared>, tab: &Rc<Tab>, finished: &crate::term::
     };
     notify_desktop(shared, tab.id, &title, &body, picture);
     let notice = Notice {
-        workspace,
+        heading: workspace,
         what: format!("{command} {how} {after}"),
         state: Some(state),
         message: String::new(),
+        details: Vec::new(),
     };
     add_notice(shared, tab.id, &notice);
 }
@@ -1152,21 +1153,37 @@ mod tests {
     }
 
     #[test]
-    fn desktop_notifications_name_the_agent_then_the_workspace() {
+    fn desktop_notifications_tell_where_what_and_how_much() {
+        let news = |heading, place, message, stats| AgentNews {
+            program: "claude",
+            what: "is done",
+            heading,
+            place,
+            message,
+            stats,
+        };
         assert_eq!(
-            desktop_text("randy", "claude", "is done", ""),
-            ("Claude Code is done".into(), "In randy".into())
-        );
-        assert_eq!(
-            desktop_text("api", "opencode", "needs your input", "Edit\n  main.rs?"),
+            desktop_text(&news(
+                "Fix login",
+                "soi · main · #42",
+                "Fixed\n  it.",
+                "worked 3m"
+            )),
             (
-                "OpenCode needs your input".into(),
-                "api · Edit main.rs?".into()
+                "Claude Code is done · Fix login".into(),
+                "soi · main · #42\nFixed it.\nworked 3m".into()
             )
         );
         assert_eq!(
-            desktop_text("", "aider", "exited", ""),
-            ("aider exited".into(), String::new())
+            desktop_text(&news("", "", "", "")),
+            ("Claude Code is done".into(), String::new())
+        );
+        let (_, body) = desktop_text(&news("", "", &"x".repeat(500), ""));
+        assert_eq!(body.chars().count(), DESKTOP_MESSAGE_CHARS + 1);
+        assert_eq!(notices::ticket("https://github.com/a/b/issues/42"), "#42");
+        assert_eq!(
+            notices::ticket("https://jira.example.com/browse/PROJ-7/"),
+            "PROJ-7"
         );
     }
 

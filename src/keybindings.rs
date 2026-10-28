@@ -416,6 +416,13 @@ pub const BINDINGS: &[Binding] = &[
     ),
     bind(
         "Tasks",
+        "task-new",
+        "New task worktree",
+        "<Shift><Control>k",
+        "<Shift><Meta>k",
+    ),
+    bind(
+        "Tasks",
         "task-details",
         "Open the current task's details",
         "<Shift><Control>i",
@@ -427,6 +434,27 @@ pub const BINDINGS: &[Binding] = &[
         "Show or hide the plan beside the terminal",
         "<Shift><Control>m",
         "<Shift><Meta>m",
+    ),
+    bind(
+        "Tasks",
+        "task-history",
+        "Show the session history",
+        "<Shift><Control>h",
+        "<Shift><Meta>h",
+    ),
+    bind(
+        "Tasks",
+        "task-archive",
+        "Show archived workspaces",
+        "<Shift><Control>r",
+        "<Shift><Meta>r",
+    ),
+    bind(
+        "Tasks",
+        "task-changes",
+        "Inspect the current task's changes",
+        "<Shift><Control>l",
+        "<Shift><Meta>l",
     ),
     bind(
         "App",

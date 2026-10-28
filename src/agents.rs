@@ -611,6 +611,14 @@ pub fn claude_hook_command() -> i32 {
     }
 }
 
+/// The start of an agent's reply, small enough for a report.
+fn reply(text: &str) -> String {
+    text.trim().chars().take(MAX_REPLY_CHARS).collect()
+}
+
+/// Agents' replies are cut to this many characters.
+const MAX_REPLY_CHARS: usize = 1000;
+
 /// What a Claude Code hook event says about Claude's state.
 pub fn claude_event(event: &Value) -> Option<(State, String)> {
     let text = |key: &str| event.get(key).and_then(Value::as_str).unwrap_or("");
@@ -623,7 +631,8 @@ pub fn claude_event(event: &Value) -> Option<(State, String)> {
                 || message.contains("waiting for your input");
             (!reminder).then(|| (State::Input, message.to_string()))
         }
-        "Stop" => Some((State::Done, String::new())),
+        // What it said last: what it did, or what it asks.
+        "Stop" => Some((State::Done, reply(text("last_assistant_message")))),
         // Says which session it is right away, to resume it after a restart.
         "SessionStart" => Some((State::Idle, String::new())),
         _ => None,
@@ -1231,6 +1240,17 @@ mod tests {
         assert_eq!(
             event(r#"{"hook_event_name":"Stop"}"#),
             Some((State::Done, String::new()))
+        );
+        assert_eq!(
+            event(
+                r#"{"hook_event_name":"Stop","last_assistant_message":"\n Fixed the login. \n"}"#
+            ),
+            Some((State::Done, "Fixed the login.".into()))
+        );
+        let long = json!({"hook_event_name": "Stop", "last_assistant_message": "x".repeat(5000)});
+        assert_eq!(
+            claude_event(&long).map(|(_, said)| said.len()),
+            Some(MAX_REPLY_CHARS)
         );
         assert_eq!(
             event(r#"{"hook_event_name":"SessionStart"}"#),

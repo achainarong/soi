@@ -280,6 +280,8 @@ pub(super) fn install_shortcuts(state: &App) {
     }
     state.window.add_controller(controller.clone());
     state.shortcuts.replace(Some(controller));
+    drop(keys);
+    fill_task_menu(state);
 }
 
 /// Applies changed keybindings to every window.
@@ -380,6 +382,10 @@ pub(super) fn run_action(state: &App, id: &str) {
         "next-agent" => panel::next_agent(state),
         "task-details" => task_view::open(state),
         "toggle-plan" => preview::toggle(state),
+        "task-new" => tasks::create(state, None),
+        "task-history" => tasks::history(state),
+        "task-archive" => archived(state),
+        "task-changes" => changes::open(state),
         "zoom-in" => zoom(state, Some(1.1)),
         "zoom-out" => zoom(state, Some(1.0 / 1.1)),
         "zoom-reset" => zoom(state, None),

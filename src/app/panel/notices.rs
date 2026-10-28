@@ -22,25 +22,94 @@ pub(super) fn announce(shared: &Rc<Shared>, tab: &Rc<Tab>, agent: &Agent) {
         AgentState::Working => return,
     };
     let program = agent.program.as_deref().unwrap_or("agent");
-    let (title, body) = desktop_text(&workspace, program, what, &agent.message);
+    let task = tasks::task_for_tab(shared, tab);
+    let heading = task
+        .as_ref()
+        .map(|task| task.title.clone())
+        .filter(|title| !title.is_empty())
+        .unwrap_or(workspace);
+    let place = place_text(task.as_ref(), tab);
+    let stats = stats_text(agent, Instant::now());
+    let (title, body) = desktop_text(&AgentNews {
+        program,
+        what,
+        heading: &heading,
+        place: &place,
+        message: &agent.message,
+        stats: &stats,
+    });
     notify_desktop(shared, tab.id, &title, &body, Picture::State(agent.state));
     let notice = Notice {
-        workspace,
+        heading,
         what: format!("{program} {what}"),
         state: Some(agent.state),
         message: agent.message.clone(),
+        details: [place, stats]
+            .into_iter()
+            .filter(|line| !line.is_empty())
+            .collect(),
     };
     add_notice(shared, tab.id, &notice);
 }
 
+/// "soi · feature/login · #42": the repository, branch and ticket the agent
+/// works on; outside a task, the checkout of the tab's folder.
+fn place_text(task: Option<&crate::tasks::TaskContext>, tab: &Tab) -> String {
+    let (repository, branch) = match task {
+        Some(task) => (Some(task.repository.clone()), task.branch.clone()),
+        None => crate::git::checkout(&panes::tab_cwd(tab))
+            .map(|(root, branch)| (Some(root), branch))
+            .unwrap_or_default(),
+    };
+    let mut parts: Vec<String> = repository
+        .as_deref()
+        .and_then(Path::file_name)
+        .map(|name| name.to_string_lossy().into_owned())
+        .into_iter()
+        .collect();
+    parts.extend(branch);
+    parts.extend(task.and_then(|task| task.issue.as_deref()).map(ticket));
+    parts.join(" · ")
+}
+
+/// A ticket's link, short: `…/issues/42` → "#42", `…/browse/PROJ-7` →
+/// "PROJ-7".
+pub(super) fn ticket(link: &str) -> String {
+    let last = link
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or(link);
+    let last = last.split(['?', '#']).next().unwrap_or(last);
+    if !last.is_empty() && last.bytes().all(|b| b.is_ascii_digit()) {
+        format!("#{last}")
+    } else {
+        last.to_string()
+    }
+}
+
+/// "worked 3m · Opus 5.5 · 45k of 1M context (4%)".
+fn stats_text(agent: &Agent, now: Instant) -> String {
+    let usage = agent.usage.as_ref().map(agents::Usage::label);
+    [Some(totals_text(agent, now)), usage]
+        .into_iter()
+        .flatten()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
 /// What a notification under the agents says.
 pub(super) struct Notice {
-    pub(super) workspace: String,
+    /// The task's title, or else the workspace's name.
+    pub(super) heading: String,
     /// "claude needs your input".
     pub(super) what: String,
     /// Colors `what` as the panel colors this state.
     pub(super) state: Option<AgentState>,
     pub(super) message: String,
+    /// Where it works and what it took, a line each.
+    pub(super) details: Vec<String>,
 }
 
 /// Adds a notification under the agents in every window, in place of the
@@ -62,7 +131,7 @@ pub(super) fn add_notice(shared: &Rc<Shared>, tab: Uuid, notice: &Notice) {
 
 fn notice_row(shared: &Rc<Shared>, tab: Uuid, notice: &Notice) -> gtk::ListBoxRow {
     let workspace = gtk::Label::builder()
-        .label(&notice.workspace)
+        .label(&notice.heading)
         .xalign(0.0)
         .hexpand(true)
         .ellipsize(pango::EllipsizeMode::End)
@@ -95,6 +164,17 @@ fn notice_row(shared: &Rc<Shared>, tab: Uuid, notice: &Notice) -> gtk::ListBoxRo
                 .wrap(true)
                 .wrap_mode(pango::WrapMode::WordChar)
                 .lines(2)
+                .ellipsize(pango::EllipsizeMode::End)
+                .css_classes(["dim-label", "caption"])
+                .build(),
+        );
+    }
+    for line in &notice.details {
+        content.append(
+            &gtk::Label::builder()
+                .label(line)
+                .tooltip_text(line)
+                .xalign(0.0)
                 .ellipsize(pango::EllipsizeMode::End)
                 .css_classes(["dim-label", "caption"])
                 .build(),
@@ -175,21 +255,48 @@ pub(super) fn notify_desktop(
     app.send_notification(Some(&notification_id(tab)), &notification);
 }
 
-/// "Claude Code needs your input", and below it the workspace and what the
-/// agent said: "randy · Which file should I edit?".
-pub(super) fn desktop_text(
-    workspace: &str,
-    program: &str,
-    what: &str,
-    message: &str,
-) -> (String, String) {
-    let title = format!("{} {what}", agents::display_name(program));
-    let message = message.split_whitespace().collect::<Vec<_>>().join(" ");
-    let body = match (workspace.is_empty(), message.is_empty()) {
-        (false, false) => format!("{workspace} · {message}"),
-        (false, true) => format!("In {workspace}"),
-        (true, _) => message,
-    };
+/// What a desktop notification about an agent tells.
+pub(super) struct AgentNews<'a> {
+    pub(super) program: &'a str,
+    /// "is done".
+    pub(super) what: &'a str,
+    /// The task's title, or else the workspace's name.
+    pub(super) heading: &'a str,
+    /// "soi · main · #42".
+    pub(super) place: &'a str,
+    /// What the agent said: what it did, or what it asks.
+    pub(super) message: &'a str,
+    /// "worked 3m · Opus 5.5 · 45k context".
+    pub(super) stats: &'a str,
+}
+
+/// What a desktop notification says about an agent shows at a glance.
+pub(super) const DESKTOP_MESSAGE_CHARS: usize = 200;
+
+/// "Claude Code is done · Fix the login", and below it, a line each: where,
+/// what the agent said, and what it took.
+pub(super) fn desktop_text(news: &AgentNews) -> (String, String) {
+    let mut title = format!("{} {}", agents::display_name(news.program), news.what);
+    if !news.heading.is_empty() {
+        title = format!("{title} · {}", news.heading);
+    }
+    let mut message = news
+        .message
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if message.chars().count() > DESKTOP_MESSAGE_CHARS {
+        message = message
+            .chars()
+            .take(DESKTOP_MESSAGE_CHARS)
+            .collect::<String>()
+            + "…";
+    }
+    let body = [news.place, message.as_str(), news.stats]
+        .into_iter()
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
     (title, body)
 }
 
