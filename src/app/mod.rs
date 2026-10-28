@@ -235,8 +235,13 @@ struct MainTabUi {
 }
 
 impl WorkspaceUi {
+    /// A workspace always has a tab: closing its last one adds a fresh one
+    /// (see `remove_main_tab_ui`). The index is clamped anyway, so a stale
+    /// `active_tab` shows the last tab rather than aborting the app.
     fn current_tab(&self) -> Rc<MainTabUi> {
-        self.tabs.borrow()[self.active_tab.get()].clone()
+        let tabs = self.tabs.borrow();
+        let last = tabs.len().saturating_sub(1);
+        tabs[self.active_tab.get().min(last)].clone()
     }
 }
 

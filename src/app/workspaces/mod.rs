@@ -94,7 +94,7 @@ pub(super) fn add_workspace_ui(state: &App, ws: &Workspace) {
         add_main_tab(state, ws.id, &tab);
     }
     ui.active_tab
-        .set(ws.active_tab.min(ui.tabs.borrow().len() - 1));
+        .set(ws.active_tab.min(ui.tabs.borrow().len().saturating_sub(1)));
     ui.tab_stack.set_visible_child(&ui.current_tab().layout);
     refresh_main_tabs(&ui);
     let (shared, holder, id) = (Rc::downgrade(&state.shared), ui.holder.downgrade(), ws.id);
