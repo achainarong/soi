@@ -14,6 +14,13 @@ pub const MAX_URL_LEN: usize = 2048;
 
 const SCHEMES: [&str; 4] = ["https://", "http://", "mailto:", "file://"];
 
+/// Extensions of files that start programs or open other targets when
+/// opened, even when not executable.
+const LAUNCHERS: [&str; 13] = [
+    "desktop", "app", "command", "tool", "terminal", "fileloc", "webloc", "inetloc", "workflow",
+    "prefpane", "pkg", "mpkg", "jar",
+];
+
 fn is_url_char(c: char) -> bool {
     !c.is_whitespace()
         && !c.is_control()
@@ -97,10 +104,15 @@ fn check_file(rest: &str) -> Result<(), &'static str> {
     let meta = std::fs::metadata(&path).map_err(|_| "the file does not exist")?;
     // Inspect both names: launchers may use the requested name's extension,
     // while symlinks can hide the target's. macOS app bundles execute too,
-    // even though they are directories rather than executable regular files.
+    // even though they are directories rather than executable regular files;
+    // Terminal settings run their command, and location files open another
+    // target unchecked.
     if [&requested, &path].iter().any(|path| {
-        path.extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("desktop") || e.eq_ignore_ascii_case("app"))
+        path.extension().is_some_and(|e| {
+            LAUNCHERS
+                .iter()
+                .any(|launcher| e.eq_ignore_ascii_case(launcher))
+        })
     }) {
         return Err("launcher files are not opened");
     }
@@ -185,6 +197,8 @@ mod tests {
         std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o600)).unwrap();
         std::os::unix::fs::symlink(&launcher, dir.join("readme.txt")).unwrap();
         std::fs::create_dir(dir.join("Evil.APP")).unwrap();
+        std::fs::write(dir.join("run.terminal"), "plist").unwrap();
+        std::fs::write(dir.join("elsewhere.fileloc"), "plist").unwrap();
         std::fs::write(dir.join("safe.txt"), "text").unwrap();
         std::os::unix::fs::symlink(dir.join("safe.txt"), dir.join("alias.desktop")).unwrap();
         std::fs::write(dir.join("safe.txt#fragment"), "text").unwrap();
@@ -194,6 +208,8 @@ mod tests {
             "readme.txt",
             "alias.desktop",
             "Evil.APP",
+            "run.terminal",
+            "elsewhere.fileloc",
             "safe.txt#fragment",
             "safe.txt?query",
         ] {

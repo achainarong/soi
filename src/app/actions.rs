@@ -209,17 +209,7 @@ pub(super) fn track_use(state: &App) {
     // Before the shortcuts, which may stop the key.
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     let weak = Rc::downgrade(state);
-    keys.connect_key_pressed(move |_, key, code, mods| {
-        // DEBUG-SNAP
-        if matches!(
-            key,
-            gdk::Key::Left | gdk::Key::Right | gdk::Key::Up | gdk::Key::Down
-        ) {
-            crate::log::write(&format!(
-                "DEBUG-SNAP key {:?} code {code} mods {mods:?}",
-                key.name()
-            ));
-        }
+    keys.connect_key_pressed(move |_, _, _, _| {
         // Coarse, so typing doesn't change the session all the time.
         if let Some(state) = weak.upgrade()
             && now() >= state.last_used.get() + 10
@@ -274,7 +264,6 @@ pub(super) fn install_shortcuts(state: &App) {
             let id = binding.id;
             let edits = edits_text(keyval, mods);
             let action = gtk::CallbackAction::new(move |window, _| {
-                crate::log::write(&format!("DEBUG-SNAP shortcut {id} edits={edits}"));
                 if edits && editing_text(window) {
                     return glib::Propagation::Proceed;
                 }

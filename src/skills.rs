@@ -92,7 +92,7 @@ pub fn discover_in(kind: Kind, home: &Path, repository: &Path) -> Vec<Item> {
     for (folder, plugin) in folders {
         let found = match kind {
             Kind::Skill => skills_in(&folder),
-            Kind::Command => commands_in(&folder, ""),
+            Kind::Command => commands_in(&folder, "", 0),
         };
         for mut item in found {
             // Claude Code calls a plugin's `plugin:name`.
@@ -154,10 +154,13 @@ fn skills_in(folder: &Path) -> Vec<Item> {
         .collect()
 }
 
+const MAX_COMMAND_DEPTH: usize = 8;
+
 /// The `.md` files in `folder`, named after the file; those in subfolders
 /// get the folder in front, as Claude Code does: `frontend/test.md` is
-/// `frontend:test`.
-fn commands_in(folder: &Path, prefix: &str) -> Vec<Item> {
+/// `frontend:test`. Subfolders only go so deep, so linked folders that loop
+/// end.
+fn commands_in(folder: &Path, prefix: &str, depth: usize) -> Vec<Item> {
     let Ok(entries) = fs::read_dir(folder) else {
         return Vec::new();
     };
@@ -172,7 +175,9 @@ fn commands_in(folder: &Path, prefix: &str) -> Vec<Item> {
             continue;
         }
         if path.is_dir() {
-            items.extend(commands_in(&path, &format!("{prefix}{stem}:")));
+            if depth < MAX_COMMAND_DEPTH {
+                items.extend(commands_in(&path, &format!("{prefix}{stem}:"), depth + 1));
+            }
         } else if path.extension().is_some_and(|e| e == "md")
             && let Ok(text) = fs::read_to_string(&path)
         {

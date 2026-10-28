@@ -1161,8 +1161,41 @@ fn agents_resume_in_their_tabs_after_a_restart() {
         let bin = home_dir().join("bin");
         fs::create_dir(&bin).unwrap();
         let claude = bin.join("claude");
-        fs::write(&claude, "#!/bin/sh\necho \"agent $*\"\nsleep 2\n").unwrap();
+        // It waits as a process named claude: on macOS a script's process
+        // is named after its interpreter (/bin/sh runs bash).
+        let waiting = home_dir().join("agent");
+        fs::create_dir(&waiting).unwrap();
+        let sleep = ["/bin/sleep", "/usr/bin/sleep"]
+            .into_iter()
+            .find(|path| Path::new(path).exists())
+            .unwrap();
+        fs::copy(sleep, waiting.join("claude")).unwrap();
+        #[cfg(target_os = "macos")]
+        {
+            // A copied system binary only runs signed again.
+            let signed = std::process::Command::new("codesign")
+                .args(["--force", "--sign", "-"])
+                .arg(waiting.join("claude"))
+                .output()
+                .unwrap();
+            assert!(signed.status.success());
+        }
+        fs::write(
+            &claude,
+            format!(
+                "#!/bin/sh\necho \"agent $*\"\nexec '{}' 2\n",
+                waiting.join("claude").display()
+            ),
+        )
+        .unwrap();
         fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).unwrap();
+        // Also first for login shells (macOS), whose system PATH may have a
+        // real claude (e.g. /opt/homebrew/bin) ahead of this one.
+        fs::write(
+            home_dir().join(".profile"),
+            format!("PATH=\"{}:$PATH\"\n", bin.display()),
+        )
+        .unwrap();
         let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
         // SAFETY: before any thread of this test process reads the environment.
         unsafe { std::env::set_var("PATH", path) };

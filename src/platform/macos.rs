@@ -244,22 +244,7 @@ impl Platform for MacOs {
             let frame = snapped(send_rect(screen, c"visibleFrame"), snap);
             let set_frame: unsafe extern "C" fn(Id, Id, NsRect, i8) =
                 std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
-            crate::log::write(&format!(
-                "DEBUG-SNAP {snap:?} before {:?} target {frame:?}",
-                send_rect(ns_window, c"frame")
-            ));
             set_frame(ns_window, selector(c"setFrame:display:"), frame, 1);
-            crate::log::write(&format!(
-                "DEBUG-SNAP after {:?}",
-                send_rect(ns_window, c"frame")
-            ));
-            let window = ns_window as usize;
-            gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
-                crate::log::write(&format!(
-                    "DEBUG-SNAP 500ms later {:?}",
-                    send_rect(window as Id, c"frame")
-                ));
-            });
         }
         true
     }
