@@ -143,8 +143,12 @@ pub(super) fn open(state: &App) {
     body.set_margin_bottom(12);
     body.set_margin_start(12);
     body.set_margin_end(12);
-    let git = note(&body, &tilde(&ws.root_dir));
-    tasks::watch_git(&git, ws.root_dir.clone());
+    let git = note(&body, &tilde(&git_directory(state, &ws)));
+    let (weak, ws_) = (Rc::downgrade(state), ws.clone());
+    tasks::watch_git(&git, move || match weak.upgrade() {
+        Some(state) => git_directory(&state, &ws_),
+        None => ws_.root_dir.clone(),
+    });
     let tabs = gtk::Stack::builder().vexpand(true).build();
     let switcher = gtk::StackSwitcher::builder()
         .stack(&tabs)
@@ -569,19 +573,22 @@ pub(super) fn open(state: &App) {
     load_sessions(&view, &linked);
 
     let load_changes: Rc<dyn Fn()> = {
-        let (summary, refresh, directory) = (
+        let (summary, refresh, state, ws) = (
             summary.downgrade(),
             refresh.downgrade(),
-            view.ws.root_dir.clone(),
+            view.state.clone(),
+            view.ws.clone(),
         );
         Rc::new(move || {
-            let (Some(label), Some(button)) = (summary.upgrade(), refresh.upgrade()) else {
+            let (Some(label), Some(button), Some(state)) =
+                (summary.upgrade(), refresh.upgrade(), state.upgrade())
+            else {
                 return;
             };
+            let directory = git_directory(&state, &ws);
             button.set_sensitive(false);
             label.set_label("Reading workspace changes…");
-            let (summary, refresh, directory) =
-                (label.downgrade(), button.downgrade(), directory.clone());
+            let (summary, refresh) = (label.downgrade(), button.downgrade());
             background(
                 move || crate::git::status(&directory),
                 move |result| {
@@ -1135,7 +1142,9 @@ fn poll_plan(view: &Rc<View>) {
 fn copy_brief(view: &Rc<View>) {
     match form(view) {
         Ok(task) => {
-            view.window.clipboard().set_text(&task.brief(&view.ws.root_dir));
+            view.window
+                .clipboard()
+                .set_text(&task.brief(&view.ws.root_dir));
             view.agent_message.set_label(if view.plan.dirty.get() {
                 "Brief copied. The plan has unsaved edits: save it so the agent reads your latest version."
             } else {

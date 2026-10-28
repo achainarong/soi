@@ -61,6 +61,12 @@ pub struct WindowSession {
     pub width: i32,
     #[serde(default)]
     pub height: i32,
+    /// The sidebar's width (0: the default).
+    #[serde(default)]
+    pub sidebar_width: i32,
+    /// The agents panel's width, kept while it's hidden (0: its natural width).
+    #[serde(default)]
+    pub agents_width: i32,
     /// When it was last typed in (seconds since 1970; 0: unknown).
     #[serde(default)]
     pub last_used: u64,
@@ -77,6 +83,8 @@ impl Default for WindowSession {
             active: None,
             width: 0,
             height: 0,
+            sidebar_width: 0,
+            agents_width: 0,
             last_used: 0,
         }
     }

@@ -72,17 +72,7 @@ pub(in crate::app) fn profile_section(state: &App) -> (gtk::Widget, gtk::Widget)
         }
         switch_profile(&state, &name);
     });
-    let delete = gtk::Button::with_label("Delete");
-    delete.set_sensitive(!is_default);
-    let weak = Rc::downgrade(state);
-    delete.connect_clicked(move |_| {
-        let Some(state) = weak.upgrade() else { return };
-        let current = state.shared.profile.borrow().clone();
-        if let Err(err) = settings::delete_profile(&current) {
-            return crate::log::write(&format!("failed to delete profile: {err}"));
-        }
-        switch_profile(&state, settings::DEFAULT_PROFILE);
-    });
+    let delete = delete_button(state);
     let picker = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let dropdown = profile_dropdown(state);
     dropdown.set_hexpand(true);
@@ -135,4 +125,76 @@ pub(in crate::app) fn profile_section(state: &App) -> (gtk::Widget, gtk::Widget)
     naming.append(&name);
     naming.append(&rename);
     (picker.upcast(), naming.upcast())
+}
+
+/// "Delete…" opens a list of the profiles that can go: pick one, then
+/// press Delete. Deleting the active profile falls back to Default.
+fn delete_button(state: &App) -> gtk::MenuButton {
+    let names: Vec<String> = settings::list_profiles()
+        .into_iter()
+        .filter(|n| n != settings::DEFAULT_PROFILE)
+        .collect();
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::Single)
+        .css_classes(["boxed-list"])
+        .build();
+    for name in &names {
+        let label = gtk::Label::builder()
+            .label(name)
+            .xalign(0.0)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(6)
+            .margin_bottom(6)
+            .build();
+        list.append(&label);
+    }
+    list.unselect_all();
+    let confirm = gtk::Button::builder()
+        .label("Delete")
+        .css_classes(["destructive-action"])
+        .sensitive(false)
+        .build();
+    let weak = confirm.downgrade();
+    list.connect_selected_rows_changed(move |list| {
+        if let Some(confirm) = weak.upgrade() {
+            confirm.set_sensitive(list.selected_row().is_some());
+        }
+    });
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    content.append(&list);
+    content.append(&confirm);
+    let popover = gtk::Popover::builder().child(&content).build();
+
+    let weak = Rc::downgrade(state);
+    let list_ref = list.downgrade();
+    let popover_ref = popover.downgrade();
+    confirm.connect_clicked(move |_| {
+        let (Some(state), Some(list)) = (weak.upgrade(), list_ref.upgrade()) else {
+            return;
+        };
+        let Some(name) = list
+            .selected_row()
+            .and_then(|row| names.get(row.index() as usize))
+        else {
+            return;
+        };
+        if let Some(popover) = popover_ref.upgrade() {
+            popover.popdown();
+        }
+        if let Err(err) = settings::delete_profile(name) {
+            return crate::log::write(&format!("failed to delete profile: {err}"));
+        }
+        if *state.shared.profile.borrow() == *name {
+            switch_profile(&state, settings::DEFAULT_PROFILE);
+        } else {
+            refresh_profile_ui(&state);
+        }
+    });
+
+    gtk::MenuButton::builder()
+        .label("Delete…")
+        .popover(&popover)
+        .sensitive(list.first_child().is_some())
+        .build()
 }

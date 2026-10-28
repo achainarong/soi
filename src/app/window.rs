@@ -75,7 +75,10 @@ pub(super) fn new_window(shared: &Rc<Shared>, session: Option<&WindowSession>, f
         .build();
     sidebar_box.append(&window_button);
     sidebar_box.append(&sidebar);
-    let agents = panel::build(session.is_some_and(|s| s.agents_panel));
+    let agents = panel::build(
+        session.is_some_and(|s| s.agents_panel),
+        session.map_or(0, |s| s.agents_width),
+    );
     let content = gtk::Paned::builder()
         .start_child(&stack)
         .end_child(&agents.panel)
@@ -85,7 +88,7 @@ pub(super) fn new_window(shared: &Rc<Shared>, session: Option<&WindowSession>, f
     let main = gtk::Paned::builder()
         .start_child(&sidebar_box)
         .end_child(&content)
-        .position(240)
+        .position(size(session.map_or(0, |s| s.sidebar_width), 240))
         .resize_start_child(false)
         .shrink_start_child(false)
         .build();
@@ -140,6 +143,7 @@ pub(super) fn new_window(shared: &Rc<Shared>, session: Option<&WindowSession>, f
     shared.windows.borrow_mut().push(Rc::downgrade(&state));
 
     restore(&state, session, fill);
+    panel::place(&state);
 
     let weak = Rc::downgrade(&state);
     list.connect_row_selected(move |_, row| {

@@ -1726,10 +1726,14 @@ fn agents_to_start_can_be_added_edited_and_removed() {
             .unwrap()
         };
         let saved = || crate::presets::load();
-        assert_eq!(saved().len(), 2, "Claude Code and OpenCode to begin with");
+        assert_eq!(
+            saved().len(),
+            3,
+            "Claude Code, OpenCode and Pi to begin with"
+        );
         button("Add agent").emit_clicked();
-        assert_eq!(saved().len(), 3);
-        assert_eq!(saved()[2].name, "New agent");
+        assert_eq!(saved().len(), 4);
+        assert_eq!(saved()[3].name, "New agent");
         // The new card's model: the last "provider/model" entry.
         let model = find(&|w| {
             w.downcast_ref::<gtk::Entry>()
@@ -1741,7 +1745,7 @@ fn agents_to_start_can_be_added_edited_and_removed() {
         .last()
         .unwrap();
         model.set_text("openrouter/qwen/qwen3-coder");
-        assert_eq!(saved()[2].model, "openrouter/qwen/qwen3-coder");
+        assert_eq!(saved()[3].model, "openrouter/qwen/qwen3-coder");
         let previews: Vec<String> = find(&|w| w.has_css_class("monospace"))
             .into_iter()
             .map(|w| w.downcast::<gtk::Label>().unwrap().label().to_string())
@@ -1756,14 +1760,14 @@ fn agents_to_start_can_be_added_edited_and_removed() {
             w.downcast_ref::<gtk::Button>()
                 .is_some_and(|b| b.tooltip_text().as_deref() == Some("Remove this agent"))
         });
-        assert_eq!(removes.len(), 3);
+        assert_eq!(removes.len(), 4);
         removes
             .last()
             .unwrap()
             .downcast_ref::<gtk::Button>()
             .unwrap()
             .emit_clicked();
-        assert_eq!(saved().len(), 2);
+        assert_eq!(saved().len(), 3);
     });
 }
 

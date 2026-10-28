@@ -4,7 +4,7 @@
 //! soi guesses an agent's state from its terminal (busy output, bells,
 //! notifications). Agents with an integration report it exactly instead:
 //! Claude Code through hooks that run `soi claude-hook`, OpenCode through a
-//! plugin. Reports arrive as JSON lines on a Unix socket
+//! plugin, Pi through an extension. Reports arrive as JSON lines on a Unix socket
 //! (`$XDG_RUNTIME_DIR/soi.sock`), whose path each tab gets in
 //! `SOI_SOCKET`, along with its own id in `SOI_TAB_ID`.
 
@@ -25,6 +25,7 @@ use uuid::Uuid;
 pub const DEFAULT_AGENTS: &[&str] = &[
     "claude",
     "opencode",
+    "pi",
     "codex",
     "aider",
     "gemini",
@@ -578,9 +579,12 @@ export const SoiPlugin = async () => {
     if (main) report.session = { provider: "opencode", id: main }
     const line = JSON.stringify(report) + "\n"
     if (line === last) return
-    last = line
     try {
-      const client = connect(socket, () => client.end(line))
+      // Only a delivered report counts: one soi missed is sent again.
+      const client = connect(socket, () => {
+        last = line
+        client.end(line)
+      })
       client.on("error", () => {})
     } catch {}
   }
@@ -686,6 +690,114 @@ pub fn install_opencode_plugin() -> Result<(), String> {
     Ok(())
 }
 
+/// The Pi extension. Like the OpenCode plugin, it talks to the socket
+/// directly. Pi loads TypeScript itself; this is plain JavaScript so it needs
+/// no types from Pi.
+pub const PI_EXTENSION: &str = r#"// soi-agent-integration: written by soi (Settings ▸ Agents).
+// Tells soi what Pi is doing, for its agents panel, and which session it is,
+// so soi can link it to the tab's task. Outside soi it does nothing.
+// soi only replaces this file while this first line is here.
+import { connect } from "node:net"
+
+export default function (pi) {
+  const socket = process.env.SOI_SOCKET
+  const tab = process.env.SOI_TAB_ID
+  if (!socket || !tab) return
+
+  // Ephemeral sessions (--no-session) can't be resumed, so they aren't linked.
+  let session = ""
+  const notice = (ctx) => {
+    const manager = ctx?.sessionManager
+    if (manager?.getSessionFile?.()) session = manager.getSessionId?.() ?? ""
+  }
+
+  let last = ""
+  const send = (state, message = "") => {
+    const report = { tab, state, message }
+    if (session) report.session = { provider: "pi", id: session }
+    const line = JSON.stringify(report) + "\n"
+    if (line === last) return
+    try {
+      // Only a delivered report counts: one soi missed is sent again.
+      const client = connect(socket, () => {
+        last = line
+        client.end(line)
+      })
+      client.on("error", () => {})
+    } catch {}
+  }
+
+  // A run lasts from agent_start until agent_settled: retries, compaction and
+  // queued messages can start more after agent_end.
+  let running = false
+  let asking = 0
+  let error = ""
+  const settle = () => {
+    if (asking > 0) return
+    if (running) send("working")
+    else if (error) send("input", error)
+    else send("done")
+  }
+
+  pi.on("session_start", async (_event, ctx) => {
+    notice(ctx)
+  })
+  pi.on("agent_start", async (_event, ctx) => {
+    notice(ctx)
+    running = true
+    error = ""
+    settle()
+  })
+  pi.on("tool_execution_start", async () => {
+    settle()
+  })
+  pi.on("agent_end", async (event) => {
+    const reply = [...(event.messages ?? [])].reverse().find((m) => m.role === "assistant")
+    error = reply?.stopReason === "error" ? reply.errorMessage || "Error" : ""
+  })
+  pi.on("agent_settled", async (event, ctx) => {
+    notice(ctx)
+    running = false
+    if (event.aborted) error = ""
+    settle()
+  })
+  pi.on("ui_prompt_start", async (event) => {
+    asking++
+    send("input", event.title || "Waiting for your answer")
+  })
+  pi.on("ui_prompt_end", async () => {
+    asking = Math.max(0, asking - 1)
+    settle()
+  })
+}
+"#;
+
+pub fn pi_extension_path() -> PathBuf {
+    std::env::var_os("PI_CODING_AGENT_DIR")
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .unwrap_or_else(|| home().join(".pi/agent"))
+        .join("extensions/soi.ts")
+}
+
+pub fn pi_extension_installed() -> bool {
+    fs::read_to_string(pi_extension_path()).is_ok_and(|text| text == PI_EXTENSION)
+}
+
+/// Writes the Pi extension, replacing only a file soi wrote.
+pub fn install_pi_extension() -> Result<(), String> {
+    let path = pi_extension_path();
+    if let Ok(existing) = fs::read_to_string(&path)
+        && !existing.lines().next().unwrap_or("").contains(MARKER)
+    {
+        return Err(format!(
+            "{} exists and wasn't written by soi; left it unchanged",
+            path.display()
+        ));
+    }
+    write_atomically(&path, PI_EXTENSION)
+}
+
 /// `soi install-agents` (run by `make install`): installs the integrations
 /// for the agents set up on this machine, i.e. whose config directory exists.
 /// Running it again changes nothing.
@@ -712,6 +824,15 @@ pub fn install_agents_command() -> i32 {
             dir: opencode_dir,
             installed: opencode_plugin_installed,
             install: install_opencode_plugin,
+        },
+        Integration {
+            name: "Pi",
+            dir: pi_extension_path()
+                .parent()
+                .and_then(Path::parent)
+                .map(Path::to_path_buf),
+            installed: pi_extension_installed,
+            install: install_pi_extension,
         },
     ];
     let mut failed = false;
@@ -915,6 +1036,7 @@ pub fn display_name(program: &str) -> &str {
         "claude" => "Claude Code",
         "codex" => "Codex",
         "opencode" => "OpenCode",
+        "pi" => "Pi",
         other => other,
     }
 }
@@ -1184,6 +1306,7 @@ mod tests {
     #[test]
     fn the_opencode_plugin_is_marked_as_ours() {
         assert!(OPENCODE_PLUGIN.lines().next().unwrap().contains(MARKER));
+        assert!(PI_EXTENSION.lines().next().unwrap().contains(MARKER));
         assert!(CLAUDE_COMMAND.contains(MARKER));
     }
 

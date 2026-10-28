@@ -63,7 +63,7 @@ your workspaces and panes branch off the sidebar.
 - **Looks like your terminal**: colors, font and shell come from your
   Konsole or Ghostty settings; or pick a color scheme, font, opacity and
   more per **profile**.
-- **Agents panel** for coding agents (Claude Code, OpenCode, Codex, …):
+- **Agents panel** for coding agents (Claude Code, OpenCode, Pi, Codex, …):
   every agent in every window with its state (working, needs input, done),
   one click to jump to it. When an agent stops while you look elsewhere,
   soi marks it in the panel, on its tab and workspace, with a counter and
@@ -100,7 +100,7 @@ inside, so you don't need GTK installed:
   to Applications. It isn't notarized, so the first time, right-click it and
   choose Open, or run `xattr -dr com.apple.quarantine soi.app`.
 
-Settings ▸ Agents sets up Claude Code and OpenCode for a downloaded soi.
+Settings ▸ Agents sets up Claude Code, OpenCode and Pi for a downloaded soi.
 
 ### Build from source
 
@@ -124,8 +124,8 @@ Then:
 make install     # builds and installs for your user (~/.local), no sudo
 ```
 
-soi then appears in your app menu, and Claude Code and OpenCode (if you
-use them) report their state to it (see [Agents](#agents)).
+soi then appears in your app menu, and Claude Code, OpenCode and Pi (if
+you use them) report their state to it (see [Agents](#agents)).
 `make uninstall` removes soi again;
 settings and layouts stay. To install system-wide instead:
 `sudo make install PREFIX=/usr/local`.
@@ -238,7 +238,7 @@ Ctrl+click opens a link, Shift+PgUp/PgDn scrolls.
 
 ## Agents
 
-Tabs running a known agent program (`claude`, `opencode`, `codex`, `aider`,
+Tabs running a known agent program (`claude`, `opencode`, `pi`, `codex`, `aider`,
 `gemini`, … — editable in Settings ▸ Agents) show up in the agents panel
 (◨ in the sidebar, or Ctrl+Shift+G). An agent started through a wrapper,
 such as `mate opencode`, counts too: soi looks at every program in the tab's
@@ -261,6 +261,10 @@ the agents configured on your machine (`AGENTS=0` skips it); so do
 - **OpenCode**: a plugin, `~/.config/opencode/plugins/soi.js`, that sends
   OpenCode's busy, permission, question, idle and error events, with the ID
   of the session you work in (not its subagents').
+- **Pi**: an extension, `~/.pi/agent/extensions/soi.ts` (under
+  `$PI_CODING_AGENT_DIR` when set), that sends when a run starts and settles,
+  when Pi waits on a prompt (a confirm or a question from an extension), and
+  a run's final error, with the ID of the session (not of `--no-session` ones).
 - **Anything else**: run `soi status working|input|done [message]` from
   inside a tab, e.g. from your own agent's hooks or at the end of a script.
 
@@ -277,8 +281,8 @@ validated; an unknown provider is saved but cannot launch a resume command.
 ### Agents to start
 
 **Settings ▸ Agents ▸ Agents to start** sets up what the agent dropdowns
-in Task details and New task worktree offer: a name, the tool (Claude Code
-or OpenCode), a model, a variant, a wrapper to start it through and more
+in Task details and New task worktree offer: a name, the tool (Claude Code,
+OpenCode or Pi), a model, a variant, a wrapper to start it through and more
 arguments. Add a tool more than once to have it with different models, or
 once plain and once through a wrapper. Under each one is the command it
 starts, for example:
@@ -288,10 +292,13 @@ starts, for example:
 | Claude Code, model `opus`, effort `high` | `claude --model opus --effort high '<brief>'` |
 | OpenCode, model `openrouter/qwen/qwen3-coder` | `opencode --model openrouter/qwen/qwen3-coder --prompt '<brief>'` |
 | OpenCode, model `openai/gpt-6.1-sol`, arguments `--agent sol-high` | `opencode --model openai/gpt-6.1-sol --prompt '<brief>' --agent sol-high` |
+| Pi, model `anthropic/claude-opus-5-5`, variant `high` | `pi --model anthropic/claude-opus-5-5 --thinking high '<brief>'` |
 | Claude Code, model `opus`, start through `mate`, arguments `-- --no-git` | `mate claude --model opus '<brief>' -- --no-git` |
 
 Models are passed as you write them: `opencode models` lists OpenCode's
-(as provider/model); Claude Code takes an alias like `opus` or a full name.
+(as provider/model); Claude Code takes an alias like `opus` or a full name;
+`pi --list-models` lists Pi's, and Pi's variant is its thinking level (`off`
+… `max`).
 OpenCode's terminal app has no variant option, so for one, define an
 OpenCode agent with that model and variant and pass `--agent <name>`.
 
@@ -367,7 +374,8 @@ Open **Tasks** in the sidebar toolbar:
   without asking you: Claude Code with `--add-dir <folder>` and
   `--allowedTools "Edit(/<folder>/**)"`, OpenCode with
   `permission.external_directory` set to `allow` for it (through
-  `OPENCODE_CONFIG_CONTENT`, on top of your own configuration). Elsewhere
+  `OPENCODE_CONFIG_CONTENT`, on top of your own configuration). Pi has no
+  permission prompts, so it needs nothing. Elsewhere
   outside the worktree they still ask. Tasks from before keep their plan where it is
   and get a folder for their history the next time they're saved.
 - **Task details…** opens one window per workspace with four tabs
@@ -400,10 +408,11 @@ Open **Tasks** in the sidebar toolbar:
   both. Closing with unsaved edits (including with **Escape**) asks whether to
   save, discard or keep editing.
 - **Session history…** searches local session bookmarks by title, provider,
-  ID and directory. The Claude hooks and the OpenCode plugin bookmark their
+  ID and directory. The Claude hooks, the OpenCode plugin and the Pi extension bookmark their
   session IDs automatically, linked to the tab's task; use **Bookmark
   session…** for Codex and other providers. Resume
-  launches `claude --resume ID`, `opencode --session ID`, or `codex resume ID`
+  launches `claude --resume ID`, `opencode --session ID`, `pi --session ID`,
+  or `codex resume ID`
   directly in a new terminal tab at the recorded directory. No shell input is
   injected and no agent permission settings are changed. Missing directories,
   invalid IDs and unsupported providers cannot be resumed. Conversations remain
@@ -515,7 +524,7 @@ tell (e.g. to pick a fastfetch logo type).
   behind the `Platform` trait.
 - `src/dirs.rs`: soi's config and state directories (XDG, on macOS too).
 - `src/agents.rs`: agent states, reports, the `soi status` and
-  `soi claude-hook` commands, and the Claude Code / OpenCode setup.
+  `soi claude-hook` commands, and the Claude Code / OpenCode / Pi setup.
 - `src/term/`: the terminal engine.
   - `screen.rs`: the screen model (grid, scrollback, cursor, modes, re-wrapping)
   - `graphics.rs`: Kitty images

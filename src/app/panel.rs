@@ -35,6 +35,12 @@ pub(super) struct AgentsUi {
     /// The panel's rows, in the order shown. Updated in place, so they
     /// don't flicker or lose hover when an agent changes.
     rows: RefCell<Vec<AgentRow>>,
+    /// From the divider to the window's edge, also while hidden; 0: the
+    /// panel's natural width.
+    width: Cell<i32>,
+    /// `width` waits for the window's first width to be placed: until then
+    /// the divider sits at the panel's natural width, which isn't to be saved.
+    placing: Cell<bool>,
 }
 
 /// One agent's row in the panel.
@@ -56,7 +62,7 @@ struct AgentRow {
     reply: gtk::Entry,
 }
 
-pub(super) fn build(shown: bool) -> AgentsUi {
+pub(super) fn build(shown: bool, width: i32) -> AgentsUi {
     let title = gtk::Label::builder()
         .label("Agents")
         .xalign(0.0)
@@ -186,6 +192,8 @@ pub(super) fn build(shown: bool) -> AgentsUi {
         notices,
         notices_box,
         rows: RefCell::default(),
+        width: Cell::new(width),
+        placing: Cell::new(false),
     }
 }
 
@@ -240,8 +248,58 @@ pub(super) fn toggle(state: &App) {
 }
 
 pub(super) fn show(state: &App, shown: bool) {
+    if !shown {
+        remember_width(state);
+    }
     state.agents.panel.set_visible(shown);
+    if shown {
+        place(state);
+    }
     update_toggle(state);
+}
+
+/// The panel's width to save: as shown, or as it was last shown.
+pub(super) fn width(state: &App) -> i32 {
+    remember_width(state);
+    state.agents.width.get()
+}
+
+fn remember_width(state: &App) {
+    let Some(content) = state.agents.panel.parent().and_downcast::<gtk::Paned>() else {
+        return;
+    };
+    if state.agents.panel.is_visible() && content.width() > 0 && !state.agents.placing.get() {
+        state.agents.width.set(content.width() - content.position());
+    }
+}
+
+/// Puts the divider where the panel gets its remembered width, once the
+/// window has a width.
+pub(super) fn place(state: &App) {
+    state.agents.placing.set(false);
+    let width = state.agents.width.get();
+    let Some(content) = state.agents.panel.parent().and_downcast::<gtk::Paned>() else {
+        return;
+    };
+    if width <= 0 || !state.agents.panel.is_visible() {
+        return;
+    }
+    if content.width() > 0 {
+        content.set_position((content.width() - width).max(0));
+        return;
+    }
+    state.agents.placing.set(true);
+    let weak = Rc::downgrade(state);
+    content.add_tick_callback(move |content, _| {
+        let Some(state) = weak.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
+        if content.width() == 0 {
+            return glib::ControlFlow::Continue;
+        }
+        place(&state);
+        glib::ControlFlow::Break
+    });
 }
 
 fn update_toggle(state: &App) {
@@ -1275,7 +1333,8 @@ pub(super) fn settings_page(state: &App) -> gtk::Widget {
         "What Start with brief and New task worktree offer. Add a tool more than once \
          to start it with different models, say OpenCode with Qwen and with GPT. The model \
          is passed as you write it: `opencode models` lists OpenCode's (provider/model), \
-         and Claude Code takes an alias like opus or a full name like claude-opus-5-5. \
+         Claude Code takes an alias like opus or a full name like claude-opus-5-5, \
+         and `pi --list-models` lists Pi's. \
          To start one through a wrapper, like mate (mate claude …), put it under Start \
          through; its own options go in the arguments after --, e.g. -- --no-git. \
          Under each agent is the command it starts.",
@@ -1287,7 +1346,7 @@ pub(super) fn settings_page(state: &App) -> gtk::Widget {
     page.append(&text("Exact states", &["soi-section"]));
     page.append(&text(
         "Without help, soi sees whether an agent is busy or quiet. With these, \
-         Claude Code and OpenCode tell soi when they need your input and when they're done.",
+         Claude Code, OpenCode and Pi tell soi when they need your input and when they're done.",
         &["dim-label", "caption"],
     ));
     page.append(&integration_row(
@@ -1325,8 +1384,24 @@ pub(super) fn settings_page(state: &App) -> gtk::Widget {
             install: agents::install_opencode_plugin,
         },
     ));
+    page.append(&integration_row(
+        state,
+        Integration {
+            name: "Pi",
+            description: format!(
+                "Writes a small extension to {} that tells soi what Pi is doing.",
+                tilde(&agents::pi_extension_path())
+            ),
+            preview: format!(
+                "Writes {}: an extension that sends Pi's run, prompt and error events to soi.",
+                tilde(&agents::pi_extension_path())
+            ),
+            installed: agents::pi_extension_installed,
+            install: agents::install_pi_extension,
+        },
+    ));
     page.append(&text(
-        "Restart running agents afterwards. Outside soi, the hooks and the plugin do nothing.",
+        "Restart running agents afterwards. Outside soi, the hooks, the plugin and the extension do nothing.",
         &["dim-label", "caption"],
     ));
     page.upcast()

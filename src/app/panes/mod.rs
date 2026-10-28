@@ -211,6 +211,35 @@ pub(super) fn header_button(icons: &[&str], tooltip: &str) -> gtk::Button {
     button
 }
 
+/// The current directory of the workspace's focused terminal, or its first
+/// one; the project directory while it has none.
+pub(super) fn workspace_cwd(state: &App, ws: &WorkspaceUi) -> PathBuf {
+    let pane = ws
+        .last_focus
+        .upgrade()
+        .filter(|pane| pane.is_ancestor(&ws.holder))
+        .or_else(|| first_pane(&ws.layout.first_child()?));
+    let panes = state.panes.borrow();
+    pane.and_then(|pane| panes.get(&pane).cloned())
+        .map(|pane| pane_cwd(&pane))
+        .unwrap_or_else(|| ws.root_dir.clone())
+}
+
+/// Where the workspace's git status and changes come from: a task's
+/// worktree, else the folder of its selected terminal (see `workspace_cwd`).
+pub(super) fn git_directory(state: &App, ws: &WorkspaceUi) -> PathBuf {
+    let worktree = ws
+        .task
+        .borrow()
+        .as_ref()
+        .is_some_and(|task| task.branch.is_some());
+    if worktree {
+        ws.root_dir.clone()
+    } else {
+        workspace_cwd(state, ws)
+    }
+}
+
 /// The current directory of the pane's shown tab.
 pub(super) fn pane_cwd(pane: &Pane) -> PathBuf {
     pane.current()

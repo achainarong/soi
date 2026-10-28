@@ -152,6 +152,12 @@ fn explain(program: &str, model: &gtk::Entry, variant: &gtk::Entry) {
         model.set_placeholder_text(Some("Model (optional), e.g. opus or sonnet"));
         variant.set_placeholder_text(Some("Effort: low … max"));
         variant.set_tooltip_text(None);
+    } else if program == "pi" {
+        model.set_placeholder_text(Some("Model (optional), as provider/model"));
+        variant.set_placeholder_text(Some("Thinking: off … max"));
+        variant.set_tooltip_text(Some(
+            "Pi's thinking level: off, minimal, low, medium, high, xhigh or max",
+        ));
     } else {
         model.set_placeholder_text(Some("Model (optional), as provider/model"));
         variant.set_placeholder_text(Some("Variant: see tooltip"));

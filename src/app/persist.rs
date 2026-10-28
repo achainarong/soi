@@ -141,6 +141,12 @@ pub(super) fn snapshot(state: &App) -> WindowSession {
         } else {
             state.window.default_height()
         },
+        sidebar_width: state
+            .window
+            .child()
+            .and_downcast::<gtk::Paned>()
+            .map_or(0, |main| main.position()),
+        agents_width: panel::width(state),
     }
 }
 

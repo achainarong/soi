@@ -69,9 +69,10 @@ pub(super) fn workspace_row(
         ws.name.borrow().as_str(),
         "ws-name",
     );
-    let subtitle = match git_branch(&ws.root_dir) {
-        Some(branch) => format!("{branch} • {}", tilde(&ws.root_dir)),
-        None => tilde(&ws.root_dir),
+    let directory = git_directory(state, ws);
+    let subtitle = match git_branch(&directory) {
+        Some(branch) => format!("{branch} • {}", tilde(&directory)),
+        None => tilde(&directory),
     };
     let subtitle = gtk::Label::builder()
         .label(subtitle)
@@ -80,7 +81,16 @@ pub(super) fn workspace_row(
         .build();
     subtitle.add_css_class("dim-label");
     subtitle.add_css_class("caption");
-    tasks::watch_git(&subtitle, ws.root_dir.clone());
+    let weak = Rc::downgrade(state);
+    let root = ws.root_dir.clone();
+    tasks::watch_git(&subtitle, move || {
+        weak.upgrade()
+            .and_then(|state| {
+                let workspaces = state.workspaces.borrow();
+                Some(git_directory(&state, workspaces.get(&id)?))
+            })
+            .unwrap_or_else(|| root.clone())
+    });
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 2);
     content.set_hexpand(true);

@@ -540,6 +540,11 @@ impl AgentSession {
                 "--session".into(),
                 self.session_id.clone(),
             ]),
+            "pi" => Ok(vec![
+                "pi".into(),
+                "--session".into(),
+                self.session_id.clone(),
+            ]),
             _ => Err("This provider has no supported resume command.".into()),
         }
     }
@@ -768,6 +773,8 @@ mod tests {
             s.resume_command().unwrap(),
             ["opencode", "--session", "abc-123"]
         );
+        s.provider = "pi".into();
+        assert_eq!(s.resume_command().unwrap(), ["pi", "--session", "abc-123"]);
         s.provider = "codex".into();
         assert_eq!(s.resume_command().unwrap(), ["codex", "resume", "abc-123"]);
         for id in ["", "--help", "a;b", "$(whoami)", "a\nb", "../x"] {
@@ -812,7 +819,9 @@ mod tests {
         assert!(brief.contains("Issue: https://example.com/issues/1"));
         assert!(brief.contains("- [x] Done\n- [ ] Open"));
         assert!(brief.contains("/repo/.worktrees/fix/.soi/plan.md"));
-        assert!(brief.contains("- Worktree: /repo/.worktrees/fix/repo\n- Branch: fix\n- Repository: /repo\n"));
+        assert!(brief.contains(
+            "- Worktree: /repo/.worktrees/fix/repo\n- Branch: fix\n- Repository: /repo\n"
+        ));
         let template = task.plan_template();
         assert!(template.starts_with("# Fix login\n"));
         assert!(template.contains("## Description\n\nUsers get logged out."));

@@ -13,7 +13,11 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 /// The tools a preset can start, and their programs.
-pub const TOOLS: [(&str, &str); 2] = [("claude", "Claude Code"), ("opencode", "OpenCode")];
+pub const TOOLS: [(&str, &str); 3] = [
+    ("claude", "Claude Code"),
+    ("opencode", "OpenCode"),
+    ("pi", "Pi"),
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Preset {
@@ -23,7 +27,7 @@ pub struct Preset {
     pub program: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub model: String,
-    /// Claude Code's effort, e.g. `high`.
+    /// Claude Code's effort or Pi's thinking level, e.g. `high`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub variant: String,
     /// More arguments, split on whitespace, e.g. `--agent plan`.
@@ -51,7 +55,15 @@ impl Preset {
     /// terminal app doesn't (only `opencode run`): there, an OpenCode agent
     /// with that variant does it (`--agent` in the arguments).
     pub fn takes_variant(program: &str) -> bool {
-        program == "claude"
+        Self::variant_option(program).is_some()
+    }
+
+    fn variant_option(program: &str) -> Option<&'static str> {
+        match program {
+            "claude" => Some("--effort"),
+            "pi" => Some("--thinking"),
+            _ => None,
+        }
     }
 
     /// The command that starts it, with `brief` as its first prompt and
@@ -86,14 +98,16 @@ impl Preset {
         if !model.is_empty() && takes_model {
             command.extend(["--model".to_string(), model.to_string()]);
         }
-        if !variant.is_empty() && Self::takes_variant(program) {
-            command.extend(["--effort".to_string(), variant.to_string()]);
+        if !variant.is_empty()
+            && let Some(option) = Self::variant_option(program)
+        {
+            command.extend([option.to_string(), variant.to_string()]);
         }
         if let Some(brief) = brief {
             // `brief` starts with "# Task", so it can never be read as a flag.
             debug_assert!(!brief.starts_with('-'));
             match program {
-                "claude" => command.push(brief),
+                "claude" | "pi" => command.push(brief),
                 // OpenCode's TUI takes its first prompt as an option.
                 "opencode" => command.extend(["--prompt".to_string(), brief]),
                 _ => {}
@@ -208,16 +222,28 @@ fn path() -> PathBuf {
     crate::dirs::config_home().join("soi/agent-presets.json")
 }
 
-/// The presets set up, or the defaults. Unknown tools are left out.
+/// The presets set up, or the defaults. Unknown tools are left out, and a
+/// tool with no preset gets its default one, so a tool added to soi shows up
+/// in a list saved before it.
 pub fn load() -> Vec<Preset> {
     let presets: Vec<Preset> = fs::read_to_string(path())
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_else(defaults);
-    presets
+    complete(presets)
+}
+
+fn complete(presets: Vec<Preset>) -> Vec<Preset> {
+    let mut presets: Vec<Preset> = presets
         .into_iter()
         .filter(|preset| TOOLS.iter().any(|(program, _)| *program == preset.program))
-        .collect()
+        .collect();
+    for (program, _) in TOOLS {
+        if !presets.iter().any(|preset| preset.program == program) {
+            presets.push(Preset::new(program));
+        }
+    }
+    presets
 }
 
 pub fn save(presets: &[Preset]) -> io::Result<()> {
@@ -238,10 +264,26 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_list_gets_a_default_preset_for_a_tool_it_lacks() {
+        let sol = Preset {
+            name: "OpenCode 6.1 Sol".into(),
+            model: "gpt-6.1-sol".into(),
+            ..Preset::new("opencode")
+        };
+        let saved = vec![Preset::new("claude"), sol.clone(), Preset::new("gone")];
+        assert_eq!(
+            complete(saved),
+            [Preset::new("claude"), sol, Preset::new("pi")]
+        );
+        assert_eq!(complete(Vec::new()), defaults());
+    }
+
+    #[test]
     fn plain_tools_get_the_brief_as_their_first_prompt() {
         let command = |program| Preset::new(program).command(brief(), None);
         assert_eq!(command("claude"), ["claude", "# Task: x"]);
         assert_eq!(command("opencode"), ["opencode", "--prompt", "# Task: x"]);
+        assert_eq!(command("pi"), ["pi", "# Task: x"]);
         assert_eq!(Preset::new("opencode").command(None, None), ["opencode"]);
     }
 
@@ -255,6 +297,16 @@ mod tests {
         assert_eq!(
             preset("claude", "opus", "high").command(None, None),
             ["claude", "--model", "opus", "--effort", "high"]
+        );
+        assert_eq!(
+            preset("pi", "anthropic/claude-opus-5-5", "high").command(None, None),
+            [
+                "pi",
+                "--model",
+                "anthropic/claude-opus-5-5",
+                "--thinking",
+                "high"
+            ]
         );
         // OpenCode's TUI has no variant option.
         assert_eq!(

@@ -171,32 +171,46 @@ pub(super) fn remove_worktree(state: &App, id: Uuid) {
     );
 }
 
-pub(super) fn watch_git(label: &gtk::Label, directory: PathBuf) {
+/// Keeps `label` showing the branch, whether it has changes, and the folder
+/// `directory` returns. The folder is checked every second, so following a
+/// terminal's `cd` or focus shows up quickly; git is asked again when it
+/// changes, and otherwise every five seconds.
+pub(super) fn watch_git(label: &gtk::Label, directory: impl Fn() -> PathBuf + 'static) {
     let weak = label.downgrade();
     let busy = Rc::new(Cell::new(false));
+    let shown: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(None));
+    let ticks = Rc::new(Cell::new(0u32));
     let update = move || {
         if weak.upgrade().is_none() {
             return glib::ControlFlow::Break;
         }
-        if busy.replace(true) {
+        let directory = directory();
+        let moved = shown.borrow().as_ref() != Some(&directory);
+        let due = ticks.get().is_multiple_of(5);
+        ticks.set(ticks.get().wrapping_add(1));
+        if !(moved || due) || busy.replace(true) {
             return glib::ControlFlow::Continue;
         }
-        let (weak, busy, directory) = (weak.clone(), busy.clone(), directory.clone());
+        *shown.borrow_mut() = Some(directory.clone());
+        let (weak, busy) = (weak.clone(), busy.clone());
         background(
-            move || {
-                let status = crate::git::status(&directory)?;
-                let mut lines = status.lines();
-                let branch = lines.next().unwrap_or("").trim_start_matches("## ");
-                let dirty = lines.next().is_some();
-                Ok::<_, String>(format!(
-                    "{branch}{} • {}",
-                    if dirty { " *" } else { "" },
-                    tilde(&directory)
-                ))
+            move || match crate::git::status(&directory) {
+                Ok(status) => {
+                    let mut lines = status.lines();
+                    let branch = lines.next().unwrap_or("").trim_start_matches("## ");
+                    let dirty = lines.next().is_some();
+                    format!(
+                        "{branch}{} • {}",
+                        if dirty { " *" } else { "" },
+                        tilde(&directory)
+                    )
+                }
+                // Not a repository: just the folder.
+                Err(_) => tilde(&directory),
             },
-            move |result| {
+            move |text| {
                 busy.set(false);
-                if let (Some(label), Ok(text)) = (weak.upgrade(), result) {
+                if let Some(label) = weak.upgrade() {
                     label.set_label(&text);
                 }
             },
@@ -204,7 +218,7 @@ pub(super) fn watch_git(label: &gtk::Label, directory: PathBuf) {
         glib::ControlFlow::Continue
     };
     update();
-    glib::timeout_add_local(std::time::Duration::from_secs(5), update);
+    glib::timeout_add_local(std::time::Duration::from_secs(1), update);
 }
 
 /// Utility windows close with Escape, except while an operation has disabled
@@ -874,7 +888,7 @@ pub(super) fn bookmark(state: &App) {
     );
     let provider = field(
         &content,
-        "Provider (claude, opencode, codex, or another name)",
+        "Provider (claude, opencode, pi, codex, or another name)",
         "opencode",
     );
     let id = field(&content, "Provider session ID", "");

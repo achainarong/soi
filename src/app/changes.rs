@@ -8,7 +8,7 @@ pub(super) fn open(state: &App) {
 }
 
 pub(super) fn open_for(state: &App, ws: &WorkspaceUi) {
-    let directory = ws.root_dir.clone();
+    let directory = git_directory(state, ws);
     let window = gtk::Window::builder()
         .transient_for(&state.window)
         .title(format!("Changes — {}", ws.name.borrow()))
