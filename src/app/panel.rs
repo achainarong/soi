@@ -332,9 +332,18 @@ pub(super) fn tab_env(id: Uuid) -> Vec<(String, String)> {
         env.push(("SOI_SOCKET".into(), socket.to_string_lossy().into_owned()));
     }
     if let Ok(exe) = std::env::current_exe() {
-        env.push(("SOI_BIN".into(), exe.to_string_lossy().into_owned()));
+        env.push(("SOI_BIN".into(), installed(&exe.to_string_lossy())));
     }
     env
+}
+
+/// `exe`, or where it was reinstalled: Linux names a replaced binary
+/// `… (deleted)`, which agents' hooks then can't run.
+fn installed(exe: &str) -> String {
+    match exe.strip_suffix(" (deleted)") {
+        Some(path) if std::path::Path::new(path).is_file() => path.to_string(),
+        _ => exe.to_string(),
+    }
 }
 
 /// Tracks a new tab's agent.
