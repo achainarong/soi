@@ -12,11 +12,10 @@ use gtk::{gdk, gio, glib, graphene, pango};
 use uuid::Uuid;
 
 use crate::agents::{Agent, SessionMetadata};
+use crate::dirs::home_dir;
 use crate::keybindings::{self, BINDINGS, Keybindings};
 use crate::platform::Snap;
-use crate::session::{
-    self, Closed, Entry, Group, Layout, Session, WindowSession, Workspace, home_dir,
-};
+use crate::session::{self, Closed, Entry, Group, Layout, Session, WindowSession, Workspace};
 use crate::settings::{self, Settings};
 use crate::term::{Input, Progress, TermView};
 use crate::theme::{self, TerminalTheme};

@@ -6,6 +6,13 @@ use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
+/// The user's home directory, else `/`.
+pub fn home_dir() -> PathBuf {
+    directories::BaseDirs::new()
+        .map(|d| d.home_dir().to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("/"))
+}
+
 /// `$XDG_CONFIG_HOME`, else `~/.config`.
 pub fn config_home() -> PathBuf {
     xdg("XDG_CONFIG_HOME", ".config")
@@ -25,7 +32,7 @@ fn xdg(var: &str, fallback: &str) -> PathBuf {
     std::env::var_os(var)
         .map(PathBuf::from)
         .filter(|dir| dir.is_absolute())
-        .unwrap_or_else(|| crate::session::home_dir().join(fallback))
+        .unwrap_or_else(|| home_dir().join(fallback))
 }
 
 /// Replaces `path` with `bytes`, so a crash or a full disk leaves the old

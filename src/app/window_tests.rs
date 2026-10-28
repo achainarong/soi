@@ -2515,7 +2515,7 @@ fn skills_commands_and_collections_are_picked_by_clicking() {
         "skills_commands_and_collections_are_picked_by_clicking",
         || {
             let _ = application();
-            let home = crate::session::home_dir();
+            let home = crate::dirs::home_dir();
             for (path, text) in [
                 (
                     ".agents/skills/tdd/SKILL.md",

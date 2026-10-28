@@ -484,7 +484,7 @@ const CLAUDE_EVENTS: &[&str] = &[
 ];
 
 fn home() -> PathBuf {
-    crate::session::home_dir()
+    crate::dirs::home_dir()
 }
 
 pub fn claude_settings_path() -> PathBuf {

@@ -175,12 +175,6 @@ pub enum Orientation {
     Vertical,
 }
 
-pub fn home_dir() -> PathBuf {
-    directories::BaseDirs::new()
-        .map(|d| d.home_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("/"))
-}
-
 fn is_zero(n: &usize) -> bool {
     *n == 0
 }

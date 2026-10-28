@@ -508,7 +508,7 @@ fn show_collection(state: &Rc<Page>) {
     state.editor.append(&top);
     // Only the user's folders: settings belong to no repository.
     let picker = Picker::new(
-        &crate::session::home_dir(),
+        &crate::dirs::home_dir(),
         &collection.skills,
         &collection.commands,
         false,

@@ -348,7 +348,7 @@ impl Settings {
 
     /// The start directory if it exists, otherwise the home directory.
     pub fn start_dir(&self) -> PathBuf {
-        let home = crate::session::home_dir();
+        let home = crate::dirs::home_dir();
         self.start_dir
             .as_deref()
             .map(|dir| match dir.strip_prefix('~') {
