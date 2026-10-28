@@ -19,29 +19,17 @@ pub(super) fn new_pane(
     let strip = gtk::Box::new(gtk::Orientation::Horizontal, 2);
     strip.add_css_class("pane-title");
     strip.set_hexpand(true);
-    let hint = |label, id| shortcut_hint(&state.shared, label, id);
-    let search = header_button(&["edit-find-symbolic"], &hint("Search", "search"));
-    let split_right = header_button(
-        &["view-split-left-right-symbolic", "view-dual-symbolic"],
-        &hint("Split right", "split-right"),
-    );
-    let split_down = header_button(
-        &["view-split-top-bottom-symbolic", "view-paged-symbolic"],
-        &hint("Split down", "split-down"),
-    );
     let zoom = header_button(
         &["view-fullscreen-symbolic"],
-        &hint("Zoom pane", "zoom-pane"),
+        &shortcut_hint(&state.shared, "Zoom pane", "zoom-pane"),
     );
     zoom.add_css_class("zoom-button");
     let close = header_button(&["window-close-symbolic"], "Close pane");
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 2);
     header.add_css_class("pane-header");
     header.append(&strip);
-    // The workspace owns the only tab bar. Pane headers retain terminal titles.
-    header.append(&search);
-    header.append(&split_right);
-    header.append(&split_down);
+    // The workspace owns the only tab bar, with search and splits for the
+    // focused pane. Pane headers retain terminal titles.
     header.append(&zoom);
     header.append(&close);
 
@@ -57,6 +45,18 @@ pub(super) fn new_pane(
     pane.add_css_class("pane");
     pane.append(&header);
     pane.append(&overlay);
+    // Splits, closes and drags all move the pane to a new parent. Not from
+    // within the move: GTK may be building the split (a resize then crashes
+    // it). Before the next frame, though, so a hidden header never shows.
+    pane.connect_notify_local(Some("parent"), |pane, _| {
+        let header = pane.first_child().map(|header| header.downgrade());
+        glib::idle_add_local_full(glib::Priority::HIGH_IDLE, move || {
+            if let Some(header) = header.as_ref().and_then(|header| header.upgrade()) {
+                update_header(&header);
+            }
+            glib::ControlFlow::Break
+        });
+    });
     state.panes.borrow_mut().insert(
         pane.clone(),
         Rc::new(Pane {
@@ -79,17 +79,6 @@ pub(super) fn new_pane(
             }
         });
     };
-    on_click(&search, |s, p| {
-        if let Some(terminal) = s.panes.borrow().get(p).and_then(|p| p.terminal()) {
-            terminal.browse(true);
-        }
-    });
-    on_click(&split_right, |s, p| {
-        split_pane(s, p, gtk::Orientation::Horizontal)
-    });
-    on_click(&split_down, |s, p| {
-        split_pane(s, p, gtk::Orientation::Vertical)
-    });
     on_click(&zoom, zoom_pane);
     on_click(&close, |s, p| {
         let running = running_in(s, std::slice::from_ref(p));
@@ -365,6 +354,9 @@ pub(super) fn close_pane(state: &App, pane: &gtk::Box) {
         for tab in info.tabs.borrow().iter() {
             remember_closed(state, tab);
         }
+    }
+    if let Some((id, _)) = workspace_of(state, pane) {
+        update_workspace_progress(state, id);
     }
     let Some(parent) = pane.parent() else {
         return;

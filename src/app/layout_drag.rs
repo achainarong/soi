@@ -634,6 +634,8 @@ pub(super) fn move_layout(shared: &Rc<Shared>, item: DragItem, to: &App, mut pla
             }
         }
     }
+    update_workspace_progress(&source.state, source.workspace);
+    update_workspace_progress(to, workspace);
     save_all(shared);
     panel::refresh(shared);
 }

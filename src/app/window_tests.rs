@@ -40,6 +40,7 @@ checks![
     closed_tabs_reopen_with_their_folder_and_output,
     typing_goes_to_every_pane_while_broadcasting,
     tabs_show_the_progress_programs_report,
+    pane_headers_show_only_in_splits,
     screen_readers_get_the_lines_and_the_cursor,
     task_context_preview_and_history_work_in_real_windows,
     agent_navigation_keeps_sidebar_geometry_and_terminal_zoom,
@@ -1440,7 +1441,9 @@ fn agents_report_states_and_alert_until_seen() {
         let ui = &window.agents;
         assert_eq!(ui.count.label(), "1");
         assert!(ui.count.is_visible());
-        assert!(tab.dot.is_visible());
+        assert!(tab.dot.get_visible());
+        let main = window.workspaces.borrow()[&first].current_tab();
+        assert!(main.dot.is_visible(), "the main tab is marked");
         let notice = ui.notices.row_at_index(0).expect("a notification");
         assert_eq!(notice.widget_name(), tab.id.to_string().as_str());
         assert!(
@@ -1500,7 +1503,7 @@ fn agents_report_states_and_alert_until_seen() {
         assert_eq!(window.active.get(), Some(first));
         assert!(!tab.agent.borrow().unseen);
         assert!(!ui.count.is_visible());
-        assert!(!tab.dot.is_visible());
+        assert!(!tab.dot.get_visible());
 
         // Shown or hidden, the panel comes back that way.
         assert!(!saved_window(window.id.get()).agents_panel);
@@ -1661,14 +1664,36 @@ fn tabs_show_the_progress_programs_report() {
                 .type_input(&Input::Text(format!("\x15{command}\r")))
         };
         run(r"printf '\033]9;4;1;50\007'");
-        wait_until(|| bar.is_visible());
+        // Its own flag: the pane's header is hidden while it's alone.
+        wait_until(|| bar.get_visible());
         assert_eq!(bar.fraction(), 0.5);
+        let main = active_workspace(&window).unwrap().current_tab();
+        assert!(main.progress.is_visible(), "on the main tab too");
+        assert_eq!(main.progress.fraction(), 0.5);
         assert!(sidebar.is_visible(), "seen from other workspaces too");
         assert_eq!(sidebar.fraction(), 0.5);
         run(r"printf '\033]9;4;2;80\007'");
         wait_until(|| bar.has_css_class("error"));
         run(r"printf '\033]9;4;0\007'");
-        wait_until(|| !bar.is_visible());
+        wait_until(|| !bar.get_visible());
+        assert!(!main.progress.is_visible());
+        window.window.close();
+    });
+}
+
+fn pane_headers_show_only_in_splits() {
+    isolated("pane_headers_show_only_in_splits", || {
+        let (_app, shared) = application();
+        let window = new_window(&shared, None, true);
+        let first = current_pane(&window).unwrap();
+        let header = |pane: &gtk::Box| pane.first_child().unwrap();
+        wait_until(|| !header(&first).is_visible());
+        split_pane(&window, &first, gtk::Orientation::Horizontal);
+        let second = current_pane(&window).unwrap();
+        assert_ne!(first, second);
+        wait_until(|| header(&first).is_visible() && header(&second).is_visible());
+        close_pane(&window, &second);
+        wait_until(|| !header(&first).is_visible());
         window.window.close();
     });
 }

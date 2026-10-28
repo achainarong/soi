@@ -16,15 +16,38 @@ pub(super) fn add_workspace_ui(state: &App, ws: &Workspace) {
         &["list-add-symbolic"],
         &shortcut_hint(&state.shared, "New main tab", "new-tab"),
     );
-    let header = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    // Right after the last tab, as in a browser; tabs go in before it.
+    tab_strip.append(&new);
     let scroll = gtk::ScrolledWindow::builder()
         .child(&tab_strip)
         .hexpand(true)
         .hscrollbar_policy(gtk::PolicyType::Automatic)
         .vscrollbar_policy(gtk::PolicyType::Never)
         .build();
+    let header = gtk::Box::new(gtk::Orientation::Horizontal, 2);
     header.append(&scroll);
-    header.append(&new);
+    // For the focused pane, as their shortcuts are.
+    let hint = |label, id| shortcut_hint(&state.shared, label, id);
+    let actions = [
+        (
+            header_button(&["edit-find-symbolic"], &hint("Search", "search")),
+            "search",
+        ),
+        (
+            header_button(
+                &["view-split-left-right-symbolic", "view-dual-symbolic"],
+                &hint("Split right", "split-right"),
+            ),
+            "split-right",
+        ),
+        (
+            header_button(
+                &["view-split-top-bottom-symbolic", "view-paged-symbolic"],
+                &hint("Split down", "split-down"),
+            ),
+            "split-down",
+        ),
+    ];
     let layout = gtk::Box::new(gtk::Orientation::Vertical, 0);
     layout.append(&header);
     layout.append(&tab_stack);
@@ -83,6 +106,18 @@ pub(super) fn add_workspace_ui(state: &App, ws: &Workspace) {
             new_main_tab(&state, None);
         }
     });
+    for (button, action) in actions {
+        header.append(&button);
+        let (shared, holder, id) = (Rc::downgrade(&state.shared), ui.holder.downgrade(), ws.id);
+        button.connect_clicked(move |_| {
+            if let (Some(shared), Some(holder)) = (shared.upgrade(), holder.upgrade())
+                && let Some(state) = window_of(&shared, &holder)
+            {
+                select_workspace(&state, id);
+                run_action(&state, action);
+            }
+        });
+    }
 }
 
 /// Makes sure there is at least one workspace to show.

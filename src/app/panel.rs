@@ -809,6 +809,13 @@ pub(super) fn refresh(shared: &Rc<Shared>) {
                 set_dot(&tab.dot, agent.unseen.then_some(agent.state));
             }
         }
+        let workspaces: Vec<Rc<WorkspaceUi>> =
+            state.workspaces.borrow().values().cloned().collect();
+        for ws in workspaces {
+            for tab in ws.tabs.borrow().iter() {
+                set_dot(&tab.dot, most_urgent(state, &tab_panes(tab)));
+            }
+        }
         let ids: Vec<Uuid> = state.workspaces.borrow().keys().copied().collect();
         for id in ids {
             if let Some(dot) = find_row(state, &id.to_string()).and_then(|row| row_dot(&row)) {
@@ -820,8 +827,13 @@ pub(super) fn refresh(shared: &Rc<Shared>) {
 
 /// The most urgent state among a workspace's agents that need you.
 fn workspace_state(state: &App, id: Uuid) -> Option<AgentState> {
+    most_urgent(state, &workspace_panes(state, id))
+}
+
+/// The most urgent state among the agents in `panes` that need you.
+fn most_urgent(state: &App, panes_in: &[gtk::Box]) -> Option<AgentState> {
     let panes = state.panes.borrow();
-    workspace_panes(state, id)
+    panes_in
         .iter()
         .filter_map(|pane| panes.get(pane))
         .flat_map(|pane| pane.tabs.borrow().clone())

@@ -264,6 +264,22 @@ pub(in crate::app) fn update_tab_strip(info: &Pane) {
     for tab in tabs.iter() {
         tab.close.set_visible(!single);
     }
+    if let Some(header) = info.strip.parent() {
+        update_header(&header);
+    }
+}
+
+/// A pane alone in its main tab, with one terminal, shows no header: the
+/// main tab shows its title, agent and progress, and the tab bar its buttons.
+pub(in crate::app) fn update_header(header: &gtk::Widget) {
+    let Some(pane) = header.parent() else {
+        return;
+    };
+    let split = pane.parent().is_none_or(|p| p.is::<gtk::Paned>());
+    let tabs = header
+        .first_child()
+        .map_or(0, |strip| strip.observe_children().n_items());
+    header.set_visible(split || tabs > 1);
 }
 
 /// Closes a tab; closing the last one closes the pane.
@@ -366,9 +382,15 @@ pub(in crate::app) fn reopen_tab(state: &App) {
     }
 }
 
-/// Shows progress in the workspace's sidebar row too: of all its tabs
-/// together, so it's seen from other workspaces.
+/// Shows progress on the main tabs and in the workspace's sidebar row too:
+/// of all their terminals together, so it's seen from other tabs and
+/// workspaces.
 pub(in crate::app) fn update_workspace_progress(state: &App, id: Uuid) {
+    if let Some(ws) = state.workspaces.borrow().get(&id) {
+        for tab in ws.tabs.borrow().iter() {
+            show_progress(&tab.progress, combined(&reported(state, &tab_panes(tab))));
+        }
+    }
     let Some(row) = find_row(state, &id.to_string()) else {
         return;
     };
@@ -377,20 +399,25 @@ pub(in crate::app) fn update_workspace_progress(state: &App, id: Uuid) {
     else {
         return;
     };
-    let reported: Vec<Progress> = {
-        let panes = state.panes.borrow();
-        workspace_panes(state, id)
-            .iter()
-            .filter_map(|pane| panes.get(pane))
-            .flat_map(|pane| {
-                let tabs = pane.tabs.borrow();
-                tabs.iter()
-                    .filter_map(|tab| tab.reported_progress.get())
-                    .collect::<Vec<_>>()
-            })
-            .collect()
-    };
-    show_progress(&bar, combined(&reported));
+    show_progress(
+        &bar,
+        combined(&reported(state, &workspace_panes(state, id))),
+    );
+}
+
+/// What the terminals in `panes` report of their progress.
+fn reported(state: &App, panes_in: &[gtk::Box]) -> Vec<Progress> {
+    let panes = state.panes.borrow();
+    panes_in
+        .iter()
+        .filter_map(|pane| panes.get(pane))
+        .flat_map(|pane| {
+            let tabs = pane.tabs.borrow();
+            tabs.iter()
+                .filter_map(|tab| tab.reported_progress.get())
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// Several programs' progress as one: errors first, else how far they

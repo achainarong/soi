@@ -219,6 +219,10 @@ struct MainTabUi {
     name: RefCell<String>,
     button: gtk::Box,
     label: gtk::Label,
+    /// Its agents' state and its programs' progress, for when a pane alone
+    /// in the tab hides its header (see `update_header`).
+    dot: gtk::Label,
+    progress: gtk::ProgressBar,
     layout: gtk::Box,
     last_focus: glib::WeakRef<gtk::Box>,
     zoomed: glib::WeakRef<gtk::Box>,

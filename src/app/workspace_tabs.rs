@@ -49,17 +49,29 @@ pub(super) fn add_main_tab_layout(
         &["window-close-symbolic"],
         &shortcut_hint(&state.shared, "Close main tab", "close-tab"),
     );
+    let dot = panel::new_dot();
+    let progress = gtk::ProgressBar::builder()
+        .css_classes(["tab-progress"])
+        .valign(gtk::Align::Center)
+        .visible(false)
+        .build();
     let button = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     button.add_css_class("pane-tab");
+    button.append(&dot);
     button.append(&label);
+    button.append(&progress);
     button.append(&close);
-    ws.tab_strip.append(&button);
+    // Before the new-tab button, which stays last.
+    let last = ws.tabs.borrow().last().map(|tab| tab.button.clone());
+    ws.tab_strip.insert_child_after(&button, last.as_ref());
     ws.tab_stack.add_named(&layout, Some(&saved.id.to_string()));
     let tab = Rc::new(MainTabUi {
         id: saved.id,
         name: RefCell::new(saved.name.clone()),
         button: button.clone(),
         label,
+        dot,
+        progress,
         layout,
         last_focus: glib::WeakRef::new(),
         zoomed: glib::WeakRef::new(),
