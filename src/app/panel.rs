@@ -355,6 +355,9 @@ pub(super) fn register(shared: &Rc<Shared>, tab: &Rc<Tab>) {
 /// Announces a long command that ended while you looked elsewhere, like
 /// an agent that's done (agents are announced as such).
 fn command_finished(shared: &Rc<Shared>, tab: &Rc<Tab>, finished: &crate::term::Finished) {
+    // The shell is back, so no agent runs in it any more (also one that
+    // quit before soi saw it run).
+    tab.resume.take();
     let long = shared.settings.borrow().long_command();
     if long.is_none_or(|long| finished.took < long)
         || is_visible(tab)
@@ -464,9 +467,14 @@ fn observe(tab: &Tab, names: &[String], now: Instant) -> bool {
         .last_activity()
         .is_some_and(|at| now.duration_since(at) < agents::BUSY_WINDOW);
     let visible = is_visible(tab);
-    tab.agent
-        .borrow_mut()
-        .observe(program.as_deref(), known, busy, visible, now)
+    let mut agent = tab.agent.borrow_mut();
+    let running = agent.is_agent() && agent.state != AgentState::Exited;
+    let changed = agent.observe(program.as_deref(), known, busy, visible, now);
+    if running && (!agent.is_agent() || agent.state == AgentState::Exited) {
+        // It quit: the tab comes back as a shell.
+        tab.resume.take();
+    }
+    changed
 }
 
 /// Shown in the window you're using.
@@ -560,6 +568,9 @@ pub(super) fn listen(shared: &Rc<Shared>) {
                         .get(&report.tab)
                         .and_then(Weak::upgrade)
                 {
+                    if metadata.resume_command().is_ok() {
+                        tab.resume.replace(Some(metadata.clone()));
+                    }
                     tasks::record_report(&shared, &tab, metadata);
                 }
             }

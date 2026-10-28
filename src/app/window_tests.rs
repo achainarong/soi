@@ -30,6 +30,7 @@ checks![
     layout_drop_waits_for_drag_end_and_cancellation_does_nothing,
     quick_switcher_goes_to_the_workspace_typed,
     terminal_output_comes_back_after_a_restart,
+    agents_resume_in_their_tabs_after_a_restart,
     context_tracks_shell_directory_changes,
     agents_report_states_and_alert_until_seen,
     zoomed_panes_fill_the_workspace_until_the_layout_changes,
@@ -1148,6 +1149,57 @@ fn terminal_output_comes_back_after_a_restart() {
             .expect("old output is back");
         assert!(before < text.find("restored").unwrap());
         assert!(text.find("restored").unwrap() < text.find("after the restart").unwrap());
+        window.window.close();
+    });
+}
+
+fn agents_resume_in_their_tabs_after_a_restart() {
+    isolated("agents_resume_in_their_tabs_after_a_restart", || {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        // A "claude" that says how it was started, then quits after a while.
+        let bin = home_dir().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let claude = bin.join("claude");
+        fs::write(&claude, "#!/bin/sh\necho \"agent $*\"\nsleep 2\n").unwrap();
+        fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+        // SAFETY: before any thread of this test process reads the environment.
+        unsafe { std::env::set_var("PATH", path) };
+        let (app, shared) = application();
+        panel::listen(&shared);
+        let window = new_window(&shared, None, true);
+        let pane = current_pane(&window).unwrap();
+        let tab = window.panes.borrow()[&pane].current().unwrap();
+        let mut socket =
+            std::os::unix::net::UnixStream::connect(crate::agents::socket_path().unwrap()).unwrap();
+        writeln!(
+            socket,
+            r#"{{"tab":"{}","state":"done","session":{{"provider":"claude","id":"abc-123"}}}}"#,
+            tab.id
+        )
+        .unwrap();
+        drop(socket);
+        wait_until(|| tab.resume.borrow().is_some());
+        window.window.close();
+        let Entry::Workspace(saved) = &saved_window(window.id.get()).sidebar[0] else {
+            panic!("workspace not saved")
+        };
+        let Layout::Pane { agents, .. } = &saved.tabs[0].layout else {
+            panic!("pane not saved")
+        };
+        assert_eq!(agents[0].as_ref().unwrap().id, "abc-123");
+
+        let restored = init_shared(&app);
+        restore_windows(&restored);
+        let window = &restored.windows()[0];
+        let pane = current_pane(window).unwrap();
+        let tab = window.panes.borrow()[&pane].current().unwrap();
+        assert!(tab.resume.borrow().is_some(), "kept until the agent quits");
+        wait_until(|| tab.terminal.export(10).contains("agent --resume abc-123"));
+        wait_until(|| tab.agent.borrow().program.as_deref() == Some("claude"));
+        // It quit: a restart now brings back the shell alone.
+        wait_until(|| tab.resume.borrow().is_none());
         window.window.close();
     });
 }

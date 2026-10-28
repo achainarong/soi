@@ -7,8 +7,15 @@ mod tabs;
 pub(super) use tabs::*;
 
 /// Builds a terminal pane. The initial directory and identity restore its
-/// terminal; an empty directory list leaves it ready for an explicit command.
-pub(super) fn new_pane(state: &App, tabs: &[PathBuf], ids: &[Uuid], active: usize) -> gtk::Box {
+/// terminal and resume the agent session it ran; an empty directory list
+/// leaves it ready for an explicit command.
+pub(super) fn new_pane(
+    state: &App,
+    tabs: &[PathBuf],
+    ids: &[Uuid],
+    agents: &[Option<SessionMetadata>],
+    active: usize,
+) -> gtk::Box {
     let strip = gtk::Box::new(gtk::Orientation::Horizontal, 2);
     strip.add_css_class("pane-title");
     strip.set_hexpand(true);
@@ -95,7 +102,16 @@ pub(super) fn new_pane(state: &App, tabs: &[PathBuf], ids: &[Uuid], active: usiz
     });
 
     for (i, cwd) in tabs.iter().enumerate() {
-        add_tab(state, &pane, cwd, ids.get(i).copied());
+        if let Some(index) = add_tab(state, &pane, cwd, ids.get(i).copied())
+            && let Some(Some(agent)) = agents.get(i)
+            && let Some(tab) = state
+                .panes
+                .borrow()
+                .get(&pane)
+                .and_then(|pane| pane.tabs.borrow().get(index).cloned())
+        {
+            tasks::resume_agent(state, &tab, agent);
+        }
     }
     activate_tab(state, &pane, active, false);
     pane
@@ -325,7 +341,7 @@ pub(super) fn split_pane(state: &App, pane: &gtk::Box, orientation: gtk::Orienta
     let Some(info) = state.panes.borrow().get(pane).cloned() else {
         return;
     };
-    let new = new_pane(state, &[pane_cwd(&info)], &[], 0);
+    let new = new_pane(state, &[pane_cwd(&info)], &[], &[], 0);
     let Some(slot) = Slot::take(pane.upcast_ref()) else {
         return;
     };
@@ -373,7 +389,7 @@ pub(super) fn close_pane(state: &App, pane: &gtk::Box) {
         // Last pane of the workspace: keep the workspace, start a fresh shell.
         let root_dir = workspace_of(state, pane).map(|(_, ws)| ws.root_dir.clone());
         holder.remove(pane);
-        let new = new_pane(state, &[root_dir.unwrap_or_else(home_dir)], &[], 0);
+        let new = new_pane(state, &[root_dir.unwrap_or_else(home_dir)], &[], &[], 0);
         holder.append(&new);
         focus_pane(state, &new);
     }

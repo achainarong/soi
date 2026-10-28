@@ -171,6 +171,8 @@ struct SpawnRequest {
     argv: Vec<String>,
     cwd: PathBuf,
     env: Vec<(String, String)>,
+    /// Typed once the program runs (see `TermView::type_ahead`).
+    input: String,
 }
 
 struct Inner {
@@ -263,6 +265,7 @@ impl TermView {
                 argv,
                 cwd: cwd.to_path_buf(),
                 env,
+                input: String::new(),
             })),
             look: RefCell::new(make_look(&area, theme)),
             shaped: RefCell::default(),
@@ -455,6 +458,15 @@ impl TermView {
             }
             Input::Text(text) => self.inner.send_input(text.as_bytes()),
             Input::Paste(text) => self.inner.send_paste(&normalize_paste(text)),
+        }
+    }
+
+    /// Types `text` for the program: now, or as soon as it runs (a terminal
+    /// starts its program once it has a size).
+    pub fn type_ahead(&self, text: &str) {
+        match self.inner.spawn.borrow_mut().as_mut() {
+            Some(request) => request.input.push_str(text),
+            None => self.inner.write(text.as_bytes()),
         }
     }
 
@@ -1168,6 +1180,9 @@ impl Inner {
         match pty::spawn(&request.argv, &request.cwd, &env, size) {
             Ok((pty, events)) => {
                 self.pty.replace(Some(pty));
+                if !request.input.is_empty() {
+                    self.write(request.input.as_bytes());
+                }
                 let weak = Rc::downgrade(self);
                 glib::spawn_future_local(async move {
                     while let Ok(first) = events.recv().await {

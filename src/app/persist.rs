@@ -177,12 +177,23 @@ pub(super) fn snapshot_layout(state: &App, widget: &gtk::Widget) -> Option<Layou
     let pane = panes.get(pane)?;
     let tabs: Vec<PathBuf> = pane.tabs.borrow().iter().map(|tab| tab_cwd(tab)).collect();
     let ids = pane.tabs.borrow().iter().map(|tab| tab.id).collect();
+    let mut agents: Vec<_> = pane
+        .tabs
+        .borrow()
+        .iter()
+        .map(|tab| tab.resume.borrow().clone())
+        .collect();
+    // As loaded when none was saved, so unchanged layouts compare equal.
+    if agents.iter().all(Option::is_none) {
+        agents.clear();
+    }
     let active = pane.active.get().min(tabs.len().saturating_sub(1));
     Some(Layout::Pane {
         cwd: tabs.get(active)?.clone(),
         active,
         tabs: if tabs.len() > 1 { tabs } else { Vec::new() },
         ids,
+        agents,
         zoomed: widget.has_css_class("zoomed"),
     })
 }
@@ -194,6 +205,7 @@ pub(super) fn build_layout(state: &App, layout: &Layout) -> gtk::Widget {
             tabs,
             active,
             ids,
+            agents,
             zoomed,
         } => {
             let tabs = if tabs.is_empty() {
@@ -201,7 +213,7 @@ pub(super) fn build_layout(state: &App, layout: &Layout) -> gtk::Widget {
             } else {
                 tabs.as_slice()
             };
-            let pane = new_pane(state, tabs, ids, *active);
+            let pane = new_pane(state, tabs, ids, agents, *active);
             if *zoomed {
                 // Zoomed once it's in its workspace (see `add_workspace_ui`).
                 pane.add_css_class("zoom-when-shown");

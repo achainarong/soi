@@ -304,6 +304,23 @@ pub struct SessionMetadata {
     pub id: String,
 }
 
+impl SessionMetadata {
+    /// The command that resumes the session. Arguments are passed directly to
+    /// the PTY or typed into a shell; IDs are checked, so neither can run
+    /// arbitrary commands. Unknown providers can't be resumed.
+    pub fn resume_command(&self) -> Result<Vec<String>, String> {
+        crate::tasks::validate_id(&self.id)?;
+        let (program, flag) = match self.provider.as_str() {
+            "claude" => ("claude", "--resume"),
+            "codex" => ("codex", "resume"),
+            "opencode" => ("opencode", "--session"),
+            "pi" => ("pi", "--session"),
+            _ => return Err("This provider has no supported resume command.".into()),
+        };
+        Ok(vec![program.into(), flag.into(), self.id.clone()])
+    }
+}
+
 impl Report {
     pub fn parse(bytes: &[u8]) -> Option<(Uuid, State, String)> {
         let report: Report = serde_json::from_slice(bytes).ok()?;

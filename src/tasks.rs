@@ -594,33 +594,13 @@ impl AgentSession {
             .all(|word| text.contains(word))
     }
 
-    /// Arguments are passed directly to the PTY, never to a shell. Unknown
-    /// providers remain useful bookmarks, but cannot execute arbitrary commands.
+    /// Unknown providers remain useful bookmarks, but can't be resumed.
     pub fn resume_command(&self) -> Result<Vec<String>, String> {
-        validate_id(&self.session_id)?;
-        match self.provider.as_str() {
-            "claude" => Ok(vec![
-                "claude".into(),
-                "--resume".into(),
-                self.session_id.clone(),
-            ]),
-            "codex" => Ok(vec![
-                "codex".into(),
-                "resume".into(),
-                self.session_id.clone(),
-            ]),
-            "opencode" => Ok(vec![
-                "opencode".into(),
-                "--session".into(),
-                self.session_id.clone(),
-            ]),
-            "pi" => Ok(vec![
-                "pi".into(),
-                "--session".into(),
-                self.session_id.clone(),
-            ]),
-            _ => Err("This provider has no supported resume command.".into()),
+        crate::agents::SessionMetadata {
+            provider: self.provider.clone(),
+            id: self.session_id.clone(),
         }
+        .resume_command()
     }
 }
 

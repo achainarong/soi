@@ -862,10 +862,7 @@ pub(super) fn resume_session(state: &App, session: &AgentSession) -> Result<(), 
     if !session.directory.is_dir() {
         return Err("The session directory is missing. Restore its worktree first.".into());
     }
-    let mut command = session.resume_command()?;
-    if crate::presets::Compat::of(&command[0], &agent_path(state)).standalone {
-        command.insert(1, "--standalone".into());
-    }
+    let command = as_installed(state, session.resume_command()?);
     // Never change the cwd of an existing running process. Reuse the workspace
     // it ran in while it exists, in whichever window, else one at the same
     // directory; otherwise open a new one at the recorded directory.
@@ -927,6 +924,36 @@ pub(super) fn resume_session(state: &App, session: &AgentSession) -> Result<(), 
     )?;
     state.window.present();
     Ok(())
+}
+
+/// Resumes the agent session a restored tab ran, in the tab's shell, so it
+/// is a shell again once the agent quits. The command is typed ahead; the
+/// shell reads it when it has started.
+pub(super) fn resume_agent(state: &App, tab: &Tab, session: &SessionMetadata) {
+    // Kept until the agent quits, also when it can't start now.
+    tab.resume.replace(Some(session.clone()));
+    let command = match session.resume_command() {
+        Ok(command) => as_installed(state, command),
+        Err(e) => {
+            crate::log::write(&format!("cannot resume {} session: {e}", session.provider));
+            return;
+        }
+    };
+    if crate::agents::find_program(&command[0], &agent_path(state)).is_none() {
+        crate::log::write(&format!("cannot resume {}: not installed", command[0]));
+        return;
+    }
+    // IDs are letters, digits, `-` and `_` (see `resume_command`): nothing
+    // the shell would interpret.
+    tab.terminal.type_ahead(&format!("{}\r", command.join(" ")));
+}
+
+/// `command` with what the tool needs as installed (see `Compat`).
+fn as_installed(state: &App, mut command: Vec<String>) -> Vec<String> {
+    if crate::presets::Compat::of(&command[0], &agent_path(state)).standalone {
+        command.insert(1, "--standalone".into());
+    }
+    command
 }
 
 pub(super) fn bookmark(state: &App) {

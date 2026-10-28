@@ -10,6 +10,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::agents::SessionMetadata;
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Session {
     #[serde(default)]
@@ -148,6 +150,9 @@ pub enum Layout {
         /// Each tab's identity, to find its saved output (see `scrollback`).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         ids: Vec<Uuid>,
+        /// The agent session each tab ran, to resume it there after a restart.
+        #[serde(default, skip_serializing_if = "no_agents")]
+        agents: Vec<Option<SessionMetadata>>,
         /// Fills the workspace, the other panes hidden.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         zoomed: bool,
@@ -180,6 +185,10 @@ fn is_zero(n: &usize) -> bool {
     *n == 0
 }
 
+fn no_agents(agents: &[Option<SessionMetadata>]) -> bool {
+    agents.iter().all(Option::is_none)
+}
+
 impl Layout {
     /// A pane with one tab.
     pub fn pane(cwd: PathBuf) -> Self {
@@ -188,6 +197,7 @@ impl Layout {
             tabs: Vec::new(),
             active: 0,
             ids: Vec::new(),
+            agents: Vec::new(),
             zoomed: false,
         }
     }
@@ -504,6 +514,13 @@ mod tests {
                 tabs: vec![PathBuf::from("/project"), PathBuf::from("/project/tests")],
                 active: 1,
                 ids: vec![Uuid::new_v4(), Uuid::new_v4()],
+                agents: vec![
+                    None,
+                    Some(SessionMetadata {
+                        provider: "claude".into(),
+                        id: "abc-123".into(),
+                    }),
+                ],
                 zoomed: true,
             }),
             end: Box::new(Layout::pane(PathBuf::from("/project/src"))),

@@ -113,6 +113,7 @@ pub(in crate::app) fn add_command_tab(
         id,
         terminal: terminal.clone(),
         agent: RefCell::default(),
+        resume: RefCell::default(),
         dot,
         button: button.clone(),
         title,
@@ -344,6 +345,7 @@ pub(in crate::app) fn reopen_tab(state: &App) {
                         tabs: Vec::new(),
                         active: 0,
                         ids: vec![id],
+                        agents: Vec::new(),
                         zoomed: false,
                     },
                 };

@@ -169,7 +169,7 @@ pub(super) fn new_command_main_tab(
         return None;
     }
     let workspace = state.active.get()?;
-    let pane = new_pane(state, &[], &[], 0);
+    let pane = new_pane(state, &[], &[], &[], 0);
     if add_command_tab(state, &pane, directory, None, Some(command), env).is_none() {
         state.panes.borrow_mut().remove(&pane);
         return None;

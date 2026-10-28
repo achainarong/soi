@@ -11,7 +11,7 @@ use gtk::prelude::*;
 use gtk::{gdk, gio, glib, graphene, pango};
 use uuid::Uuid;
 
-use crate::agents::Agent;
+use crate::agents::{Agent, SessionMetadata};
 use crate::keybindings::{self, BINDINGS, Keybindings};
 use crate::platform::Snap;
 use crate::session::{
@@ -107,6 +107,9 @@ struct Tab {
     terminal: TermView,
     /// The coding agent running here, if any.
     agent: RefCell<Agent>,
+    /// The session of the agent running here, as it reported it, to resume
+    /// it after a restart.
+    resume: RefCell<Option<SessionMetadata>>,
     /// Marks the tab when its agent needs you.
     dot: gtk::Label,
     /// Terminal title and status in the pane header.
