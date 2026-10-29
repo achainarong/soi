@@ -241,7 +241,10 @@ pub(super) fn connect(state: &App) {
             refresh(&shared);
         }
     });
-    state.agents.search.connect_stop_search(|search| search.set_text(""));
+    state
+        .agents
+        .search
+        .connect_stop_search(|search| search.set_text(""));
     let add = |name: &str, f: fn(&App)| {
         let action = gio::SimpleAction::new(name, None);
         let weak = Rc::downgrade(state);
@@ -786,7 +789,10 @@ fn search_fields(
     }
     // The checkout the tab is in, which also names a branch outside a task.
     if let Some((root, branch)) = crate::git::checkout(&panes::tab_cwd(tab)) {
-        fields.extend(root.file_name().map(|name| name.to_string_lossy().into_owned()));
+        fields.extend(
+            root.file_name()
+                .map(|name| name.to_string_lossy().into_owned()),
+        );
         fields.extend(branch);
     }
     fields
