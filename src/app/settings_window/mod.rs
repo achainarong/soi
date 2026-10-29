@@ -218,6 +218,7 @@ window.soi-tools row:selected, window.soi-tools textview text selection {{ backg
 popover list, popover listview, popover row {{ background-color: transparent; color: {fg}; }}
 popover row:selected, popover row:selected:hover {{ background-color: {selected}; color: {fg}; }}
 popover check, popover radio {{ color: {fg}; }}
+.agents-search {{ background-color: {field}; border: none; color: {fg}; }}
 .agents-filters dropdown > button {{ background-color: {field}; border: none; color: {dim}; }}
 .agents-filters dropdown > button:hover {{ background-color: {hover}; color: {fg}; }}
 .agents-notices .agents-clear {{ color: {dim}; }}

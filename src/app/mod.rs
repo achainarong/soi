@@ -102,6 +102,7 @@ row:hover .ws-close, row:selected .ws-close, .ws-close:focus-visible { opacity: 
 .agents-count { font-weight: bold; font-size: 0.8em; }
 .agents-notice { padding: 4px; }
 .agents-notices list row { margin: 2px 6px; border-radius: 6px; }
+.agents-search { margin: 0 8px 4px; min-height: 0; font-size: 0.85em; }
 .agents-filters { margin: 0 8px 4px; }
 .agents-filters dropdown > button { padding: 2px 8px; min-height: 0; font-size: 0.8em; font-weight: normal; }
 .agents-clear { font-size: 0.8em; padding: 2px 8px; min-height: 0; }

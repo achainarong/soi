@@ -33,6 +33,9 @@ pub(super) struct AgentsUi {
     /// The panel itself, beside the workspaces.
     pub(super) panel: gtk::Box,
     pub(super) list: gtk::ListBox,
+    /// Narrows the list to agents whose task, workspace or message
+    /// mentions every word typed.
+    search: gtk::SearchEntry,
     activity_filter: gtk::DropDown,
     task_filter: gtk::DropDown,
     /// Shows or hides the panel; says how many agents need you.
@@ -168,6 +171,11 @@ pub(super) fn build(shown: bool, width: i32) -> AgentsUi {
         "Ready for review",
         "Finished",
     ]);
+    let search = gtk::SearchEntry::builder()
+        .placeholder_text("Search tasks, tickets, agents…")
+        .css_classes(["agents-search"])
+        .build();
+    panel.append(&search);
     // Side by side: they narrow the list, not head it.
     let filters = gtk::Box::new(gtk::Orientation::Horizontal, 4);
     filters.add_css_class("agents-filters");
@@ -203,6 +211,7 @@ pub(super) fn build(shown: bool, width: i32) -> AgentsUi {
     AgentsUi {
         panel,
         list,
+        search,
         activity_filter,
         task_filter,
         toggle,
@@ -226,6 +235,13 @@ pub(super) fn connect(state: &App) {
             }
         });
     }
+    let shared = Rc::downgrade(&state.shared);
+    state.agents.search.connect_search_changed(move |_| {
+        if let Some(shared) = shared.upgrade() {
+            refresh(&shared);
+        }
+    });
+    state.agents.search.connect_stop_search(|search| search.set_text(""));
     let add = |name: &str, f: fn(&App)| {
         let action = gio::SimpleAction::new(name, None);
         let weak = Rc::downgrade(state);
@@ -723,6 +739,59 @@ fn matches_filters(
             }))
 }
 
+/// Whether `fields` mention every word of `query`, ignoring case.
+fn matches_search(query: &str, fields: &[&str]) -> bool {
+    let text = fields.join("\n").to_lowercase();
+    query
+        .to_lowercase()
+        .split_whitespace()
+        .all(|word| text.contains(word))
+}
+
+/// What the search looks through: the task and its ticket, where the agent
+/// runs, and what it says.
+fn search_fields(
+    owner: &App,
+    workspace: Uuid,
+    tab: &Tab,
+    agent: &Agent,
+    task: Option<&crate::tasks::TaskContext>,
+) -> Vec<String> {
+    let mut fields = vec![
+        owner.name.borrow().clone(),
+        owner
+            .workspaces
+            .borrow()
+            .get(&workspace)
+            .map(|ws| ws.name.borrow().clone())
+            .unwrap_or_default(),
+        agent.program.clone().unwrap_or_default(),
+        agent.state.label().to_string(),
+        agent.message.clone(),
+        tab.title.text().to_string(),
+    ];
+    if let Some(task) = task {
+        fields.extend([
+            task.title.clone(),
+            task.status.label().to_string(),
+            task.description.clone(),
+            task.acceptance.clone(),
+            task.branch.clone().unwrap_or_default(),
+        ]);
+        if let Some(issue) = &task.issue {
+            fields.push(issue.clone());
+            fields.push(notices::ticket(issue));
+        }
+        fields.extend(task.checklist.iter().map(|item| item.text.clone()));
+    }
+    // The checkout the tab is in, which also names a branch outside a task.
+    if let Some((root, branch)) = crate::git::checkout(&panes::tab_cwd(tab)) {
+        fields.extend(root.file_name().map(|name| name.to_string_lossy().into_owned()));
+        fields.extend(branch);
+    }
+    fields
+}
+
 /// Updates every window: panel rows, counter, tab and sidebar dots.
 pub(super) fn refresh(shared: &Rc<Shared>) {
     shared.agents_shown.replace(signature(shared));
@@ -734,18 +803,27 @@ pub(super) fn refresh(shared: &Rc<Shared>) {
         let ui = &state.agents;
         let mut old = ui.rows.take();
         let mut rows = Vec::new();
+        let query = ui.search.text();
         for (tab, agent) in &agents {
+            let task = tasks::task_for_tab(shared, tab);
             if !matches_filters(
                 ui.activity_filter.selected(),
                 ui.task_filter.selected(),
                 agent.state,
-                tasks::task_for_tab(shared, tab).map(|task| task.status),
+                task.as_ref().map(|task| task.status),
             ) {
                 continue;
             }
             let Some((owner, workspace, _)) = locate(shared, tab) else {
                 continue;
             };
+            if !query.trim().is_empty() {
+                let fields = search_fields(&owner, workspace, tab, agent, task.as_ref());
+                let fields: Vec<&str> = fields.iter().map(String::as_str).collect();
+                if !matches_search(&query, &fields) {
+                    continue;
+                }
+            }
             let row = match old.iter().position(|row| row.id == tab.id) {
                 Some(i) => old.remove(i),
                 None => agent_row(shared, tab.id),
@@ -1185,6 +1263,15 @@ mod tests {
             notices::ticket("https://jira.example.com/browse/PROJ-7/"),
             "PROJ-7"
         );
+    }
+
+    #[test]
+    fn search_needs_every_word_in_any_field() {
+        let fields = ["Fix login", "PROJ-7", "Users can't sign in with SSO"];
+        assert!(matches_search("", &fields));
+        assert!(matches_search("proj-7", &fields));
+        assert!(matches_search("login sso", &fields));
+        assert!(!matches_search("login oauth", &fields));
     }
 
     #[test]
