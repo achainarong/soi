@@ -35,7 +35,7 @@ Then:
    run `soi install-agents`.
 3. To update, run the same command again; settings and layouts stay.
 
-Options go before `sh`, e.g. `curl … | SOI_VERSION=v0.1.24 sh`:
+Options go before `sh`, e.g. `curl … | SOI_VERSION=v0.1.25 sh`:
 `SOI_VERSION` installs a given release, `SOI_BIN_DIR` changes where the
 `soi` command goes, `SOI_APP_DIR` (macOS) where `soi.app` goes.
 
