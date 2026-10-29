@@ -337,6 +337,7 @@ pub fn run() -> glib::ExitCode {
         None => {
             let shared = shared.get_or_init(|| init_shared(app));
             panel::listen(shared);
+            session::make_private();
             restore_windows(shared);
         }
     });

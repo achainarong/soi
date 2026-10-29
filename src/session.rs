@@ -5,7 +5,8 @@
 use std::collections::HashSet;
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -360,6 +361,45 @@ fn state_dir() -> Option<PathBuf> {
     Some(crate::dirs::state_home().join("soi"))
 }
 
+/// Saved output and layouts can hold secrets (whatever a terminal showed):
+/// only this user may read them.
+const PRIVATE_DIR: u32 = 0o700;
+const PRIVATE_FILE: u32 = 0o600;
+
+/// Makes soi's state folder, saved output and session private, also those
+/// saved by versions that left them readable to everyone. On the writer
+/// thread, before the saves queued after it.
+pub fn make_private() {
+    let (Some(state), Some(scrollback), Some(session)) =
+        (state_dir(), scrollback::dir(), session_path())
+    else {
+        return;
+    };
+    crate::dirs::write_later(move || restrict(&state, &scrollback, &session));
+}
+
+/// Creates `state` and `scrollback` (inside it) private, or makes them so,
+/// with `session` and the saved output in `scrollback`. Symlinks are left
+/// alone: what they point to isn't soi's to change.
+fn restrict(state: &Path, scrollback: &Path, session: &Path) {
+    let set = |path: &Path, mode: u32| {
+        if fs::symlink_metadata(path).is_ok_and(|meta| !meta.file_type().is_symlink()) {
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
+        }
+    };
+    for dir in [state, scrollback] {
+        let _ = fs::DirBuilder::new()
+            .recursive(true)
+            .mode(PRIVATE_DIR)
+            .create(dir);
+        set(dir, PRIVATE_DIR);
+    }
+    set(session, PRIVATE_FILE);
+    for entry in fs::read_dir(scrollback).into_iter().flatten().flatten() {
+        set(&entry.path(), PRIVATE_FILE);
+    }
+}
+
 fn session_path() -> Option<PathBuf> {
     // A dev build (see `crate::dev_mode`) keeps its own layout.
     let name = if crate::dev_mode() {
@@ -375,7 +415,7 @@ fn session_path() -> Option<PathBuf> {
 pub mod scrollback {
     use super::*;
 
-    fn dir() -> Option<PathBuf> {
+    pub(super) fn dir() -> Option<PathBuf> {
         let name = if crate::dev_mode() {
             "scrollback-dev"
         } else {
@@ -397,7 +437,7 @@ pub mod scrollback {
     /// what fails.
     pub fn save(id: Uuid, text: &str) -> io::Result<()> {
         let path = path(id).ok_or_else(|| io::Error::other("no state directory"))?;
-        let content = (!text.is_empty()).then(|| (text.as_bytes().to_vec(), 0o666));
+        let content = (!text.is_empty()).then(|| (text.as_bytes().to_vec(), PRIVATE_FILE));
         crate::dirs::save_later(path, content, "output");
         Ok(())
     }
@@ -454,7 +494,7 @@ impl Session {
         let path = session_path()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no home directory"))?;
         let json = serde_json::to_string_pretty(self)?;
-        crate::dirs::save_later(path, Some((json.into_bytes(), 0o666)), "session");
+        crate::dirs::save_later(path, Some((json.into_bytes(), PRIVATE_FILE)), "session");
         Ok(())
     }
 }
@@ -462,6 +502,39 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_state_made_readable_by_everyone_becomes_private() {
+        let root = std::env::temp_dir().join(format!("soi-private-{}", Uuid::new_v4()));
+        let (state, outside) = (root.join("soi"), root.join("dotfiles"));
+        let scrollback = state.join("scrollback");
+        fs::create_dir_all(&scrollback).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let (session, output) = (state.join("session.json"), scrollback.join("tab.txt"));
+        let linked = outside.join("shared.txt");
+        for file in [&session, &output, &linked] {
+            fs::write(file, "secret").unwrap();
+            fs::set_permissions(file, fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        std::os::unix::fs::symlink(&linked, scrollback.join("link.txt")).unwrap();
+        for dir in [&state, &scrollback] {
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        restrict(&state, &scrollback, &session);
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        let modes = [&state, &scrollback, &session, &output, &linked].map(|p| mode(p));
+        let fresh = root.join("new");
+        restrict(
+            &fresh,
+            &fresh.join("scrollback"),
+            &fresh.join("session.json"),
+        );
+        let created = [mode(&fresh), mode(&fresh.join("scrollback"))];
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(modes, [0o700, 0o700, 0o600, 0o600, 0o644]);
+        assert_eq!(created, [0o700, 0o700]);
+    }
 
     #[test]
     fn task_context_round_trips_and_old_workspaces_still_load() {
