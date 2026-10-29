@@ -298,7 +298,7 @@ pub(super) fn create(state: &App, group: Option<Uuid>) {
         .chain(presets.iter().map(|preset| preset.name.as_str()))
         .collect();
     let agent = gtk::DropDown::from_strings(&names);
-    agent.set_tooltip_text(Some("Set these up in Settings ▸ Agents"));
+    agent.set_tooltip_text(Some("Set these up in Settings ▸ Tasks"));
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     row.append(&gtk::Label::new(Some("Agent")));
     row.append(&agent);

@@ -1,4 +1,5 @@
-//! Settings ▸ Agents.
+//! Settings ▸ Agents: telling Soi what agents do, which programs are
+//! agents, and their order in the panel.
 
 use super::*;
 
@@ -17,98 +18,6 @@ pub(in crate::app) fn settings_page(state: &App) -> gtk::Widget {
             .build()
     };
 
-    page.append(&text("Agents", &["soi-section"]));
-    page.append(&text(
-        "Tabs running one of these programs appear in the agents panel (◨ in the sidebar). \
-         Separate names with commas; leave empty for the defaults.",
-        &["dim-label", "caption"],
-    ));
-    let list = gtk::Entry::builder()
-        .text(
-            state
-                .shared
-                .settings
-                .borrow()
-                .agents
-                .clone()
-                .unwrap_or_default(),
-        )
-        .placeholder_text(agents::DEFAULT_AGENTS.join(", "))
-        .build();
-    let weak = Rc::downgrade(state);
-    list.connect_changed(move |entry| {
-        if let Some(state) = weak.upgrade() {
-            let value = entry.text().trim().to_string();
-            update_settings(&state, |s| s.agents = (!value.is_empty()).then_some(value));
-        }
-    });
-    page.append(&list);
-
-    let notify = gtk::CheckButton::builder()
-        .label("Desktop notifications when Soi isn't in front")
-        .active(state.shared.settings.borrow().desktop_notifications())
-        .build();
-    let weak = Rc::downgrade(state);
-    notify.connect_toggled(move |check| {
-        if let Some(state) = weak.upgrade() {
-            let on = check.is_active();
-            update_settings(&state, |s| s.desktop_notifications = Some(on));
-        }
-    });
-    page.append(&notify);
-    let long = gtk::SpinButton::with_range(0.0, 86_400.0, 5.0);
-    long.set_value(
-        state
-            .shared
-            .settings
-            .borrow()
-            .long_command
-            .unwrap_or(settings::DEFAULT_LONG_COMMAND) as f64,
-    );
-    let weak = Rc::downgrade(state);
-    long.connect_value_changed(move |spin| {
-        if let Some(state) = weak.upgrade() {
-            let seconds = spin.value() as u32;
-            update_settings(&state, |s| s.long_command = Some(seconds));
-        }
-    });
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    row.append(&gtk::Label::new(Some(
-        "Say when a command ends that ran at least (seconds; 0: never)",
-    )));
-    row.append(&long);
-    page.append(&row);
-    page.append(&text(
-        "When an agent finishes or asks something while you're in another app. \
-         Click the notification to go to the agent.",
-        &["dim-label", "caption"],
-    ));
-
-    page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-    page.append(&text("Order in the panel", &["soi-section"]));
-    page.append(&text(
-        "The agents panel and the switcher list agents by state, top first. \
-         Agents in the same state keep the sidebars' order.",
-        &["dim-label", "caption"],
-    ));
-    page.append(&order_section(state));
-
-    page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-    page.append(&text("Agents to start", &["soi-section"]));
-    page.append(&text(
-        "What Start with brief and New task worktree offer. Add a tool more than once \
-         to start it with different models, say OpenCode with Qwen and with GPT. The model \
-         is passed as you write it: `opencode models` lists OpenCode's (provider/model), \
-         Claude Code takes an alias like opus or a full name like claude-opus-5-5, \
-         and `pi --list-models` lists Pi's. \
-         To start one through a wrapper, like mate (mate claude …), put it under Start \
-         through; its own options go in the arguments after --, e.g. -- --no-git. \
-         Under each agent is the command it starts.",
-        &["dim-label", "caption"],
-    ));
-    page.append(&presets_section());
-
-    page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     page.append(&text("Exact states", &["soi-section"]));
     page.append(&text(
         "Without help, Soi sees whether an agent is busy or quiet. With these, \
@@ -167,9 +76,48 @@ pub(in crate::app) fn settings_page(state: &App) -> gtk::Widget {
         },
     ));
     page.append(&text(
-        "Restart running agents afterwards. Outside Soi, the hooks, the plugin and the extension do nothing.",
+        "Restart running agents afterwards. Outside Soi, the hooks, the plugin and the extension do nothing. \
+         Shared by all profiles.",
         &["dim-label", "caption"],
     ));
+
+    page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    page.append(&text("Agent programs", &["soi-section"]));
+    page.append(&text(
+        "Tabs running one of these programs appear in the agents panel (◨ in the sidebar). \
+         Separate names with commas; leave empty for the defaults.",
+        &["dim-label", "caption"],
+    ));
+    let list = gtk::Entry::builder()
+        .text(
+            state
+                .shared
+                .settings
+                .borrow()
+                .agents
+                .clone()
+                .unwrap_or_default(),
+        )
+        .placeholder_text(agents::DEFAULT_AGENTS.join(", "))
+        .build();
+    let weak = Rc::downgrade(state);
+    list.connect_changed(move |entry| {
+        if let Some(state) = weak.upgrade() {
+            let value = entry.text().trim().to_string();
+            update_settings(&state, |s| s.agents = (!value.is_empty()).then_some(value));
+        }
+    });
+    page.append(&list);
+
+    page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    page.append(&text("Order in the panel", &["soi-section"]));
+    page.append(&text(
+        "The agents panel and the switcher list agents by state, top first. \
+         Agents in the same state keep the sidebars' order.",
+        &["dim-label", "caption"],
+    ));
+    page.append(&order_section(state));
+
     page.upcast()
 }
 

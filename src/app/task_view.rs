@@ -363,7 +363,7 @@ pub(super) fn open(state: &App) {
     let presets = Rc::new(crate::presets::load());
     let names: Vec<&str> = presets.iter().map(|preset| preset.name.as_str()).collect();
     let program = gtk::DropDown::from_strings(&names);
-    program.set_tooltip_text(Some("The agent to start; set them up in Settings ▸ Agents"));
+    program.set_tooltip_text(Some("The agent to start; set them up in Settings ▸ Tasks"));
     handoff.append(&program);
     let model = tasks::model_entry();
     model.set_text(presets.first().map_or("", |p| p.model.as_str()));

@@ -6,11 +6,13 @@ mod form;
 mod presets;
 mod profiles;
 mod shortcuts;
+mod tasks;
 
 pub(super) use form::*;
 pub(super) use presets::*;
 pub(super) use profiles::*;
 pub(super) use shortcuts::*;
+pub(super) use tasks::*;
 
 pub(super) const MIN_ZOOM: f64 = 0.5;
 pub(super) const MAX_ZOOM: f64 = 3.0;
@@ -184,6 +186,31 @@ window.soi-settings button.capturing {{ border-color: {accent}; color: {accent};
 window.soi-settings .soi-section {{ font-weight: bold; color: {accent}; }}
 window.soi-settings .soi-note {{ color: {accent}; }}
 window.soi-settings button.changed {{ color: {accent}; }}
+/* The font buttons' dialog: a GTK window of its own, not a Settings one. */
+window.fontchooser {{ background-color: {solid}; color: {fg}; }}
+window.fontchooser button, window.fontchooser entry, window.fontchooser spinbutton,
+window.fontchooser menubutton > button {{
+  background-color: {field}; background-image: none; color: {fg};
+  border-color: {border}; box-shadow: none;
+}}
+window.fontchooser spinbutton button {{ background-color: transparent; border: none; }}
+window.fontchooser button:hover {{ background-color: {hover}; }}
+window.fontchooser button.default {{ background-color: {accent}; color: {solid}; border-color: {accent}; }}
+window.fontchooser entry:focus-within, window.fontchooser spinbutton:focus-within,
+window.fontchooser button:focus-visible {{ outline-color: {accent}; border-color: {accent}; }}
+window.fontchooser entry selection, window.fontchooser text selection {{ background-color: {selection}; color: {fg}; }}
+window.fontchooser frame > border {{ border-color: {border}; }}
+window.fontchooser list, window.fontchooser listview, window.fontchooser row {{
+  background-color: transparent; color: {fg};
+}}
+window.fontchooser row:hover {{ background-color: {hover}; }}
+window.fontchooser row:selected, window.fontchooser row:selected:hover {{ background-color: {selected}; color: {fg}; }}
+window.fontchooser check {{ background-color: {field}; border-color: {border}; color: {fg}; }}
+window.fontchooser check:checked {{ background-color: {selected}; }}
+window.fontchooser scale trough {{ background-color: {border}; }}
+window.fontchooser scale highlight {{ background-color: {accent}; }}
+window.fontchooser scale slider {{ background-color: {fg}; border-color: {border}; }}
+window.fontchooser separator {{ background-color: {border}; }}
 button.soi-chip {{ padding: 2px 10px; border-radius: 999px; }}
 window.soi-settings button.soi-chip:checked, window.soi-tools button.soi-chip:checked {{
   background-color: {accent}; color: {solid}; border-color: {accent};
@@ -357,7 +384,7 @@ pub(super) fn open_settings(state: &App) {
     window.present();
 }
 
-/// The settings window's content: the General and Shortcuts pages.
+/// The settings window's content: the profile, then its pages.
 pub(super) fn settings_content(state: &App) -> gtk::Widget {
     let previous = state
         .shared
@@ -372,21 +399,26 @@ pub(super) fn settings_content(state: &App) -> gtk::Widget {
             .vexpand(true)
             .build()
     };
-    stack.add_titled(&scrolled(&settings_form(state)), Some("general"), "General");
     stack.add_titled(
-        &scrolled(&shortcuts_page(state)),
-        Some("shortcuts"),
-        "Shortcuts",
+        &scrolled(&appearance_page(state)),
+        Some("appearance"),
+        "Appearance",
+    );
+    stack.add_titled(
+        &scrolled(&terminal_page(state)),
+        Some("terminal"),
+        "Terminal",
     );
     stack.add_titled(
         &scrolled(&panel::settings_page(state)),
         Some("agents"),
         "Agents",
     );
+    stack.add_titled(&scrolled(&tasks_page(state)), Some("tasks"), "Tasks");
     stack.add_titled(
-        &scrolled(&super::requests::collections_page()),
-        Some("collections"),
-        "Collections",
+        &scrolled(&shortcuts_page(state)),
+        Some("shortcuts"),
+        "Shortcuts",
     );
     if let Some(name) = previous {
         stack.set_visible_child_name(&name);
@@ -397,8 +429,31 @@ pub(super) fn settings_content(state: &App) -> gtk::Widget {
         .margin_top(12)
         .build();
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&profile_header(state));
+    content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     content.append(&switcher);
     content.append(&stack);
     state.shared.settings_stack.set(Some(&stack));
     content.upcast()
+}
+
+/// Above the pages, as nearly everything on them belongs to the profile.
+fn profile_header(state: &App) -> gtk::Widget {
+    let profile = state.shared.profile.borrow().clone();
+    let path = settings::config_path()
+        .and_then(|p| Some(p.parent()?.join("profiles").join(format!("{profile}.conf"))))
+        .map(|p| tilde(&p))
+        .unwrap_or_default();
+    let (picker, naming) = profile_section(state);
+    let form = Form::new();
+    form.row(
+        "Profile",
+        &picker,
+        &format!(
+            "Settings belong to this profile, except Shortcuts and those shared by all \
+             profiles. You can also switch from the sidebar. Saved to {path}."
+        ),
+    );
+    form.row("Profile name", &naming, "");
+    form.widget()
 }

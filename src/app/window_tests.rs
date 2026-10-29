@@ -2570,7 +2570,7 @@ fn skills_commands_and_collections_are_picked_by_clicking() {
             let nothing = super::requests::Picker::new(&home, &[], &[], &[], true, None);
             assert!(nothing.skills().is_empty() && nothing.collection().is_none());
 
-            // A collection made in Settings ▸ Collections, by clicking.
+            // A collection made in Settings ▸ Tasks, by clicking.
             let page = super::requests::collections_page();
             fn find<W: IsA<gtk::Widget>>(root: &gtk::Widget, ok: &dyn Fn(&W) -> bool) -> Option<W> {
                 if let Some(w) = root.downcast_ref::<W>()

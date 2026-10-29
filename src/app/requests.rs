@@ -48,7 +48,7 @@ impl Picker {
                 .collect();
             let dropdown = gtk::DropDown::from_strings(&names);
             dropdown.set_tooltip_text(Some(
-                "Chooses the collection's skills, commands and MCP servers; make collections in Settings ▸ Collections",
+                "Chooses the collection's skills, commands and MCP servers; make collections in Settings ▸ Tasks",
             ));
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
             row.append(&gtk::Label::new(Some("Collection")));
@@ -297,7 +297,7 @@ fn fill(
                 .label(match kind {
                     Some(Kind::Skill) => "None found in ~/.claude/skills, ~/.agents/skills or the repository's .claude/skills and .agents/skills.",
                     Some(Kind::Command) => "None found in ~/.claude/commands, ~/.codex/prompts or the repository's .claude/commands.",
-                    None => "None found in ~/.config/soi/mcp.json (Settings ▸ Collections), ~/.claude.json, OpenCode's opencode.json or the repository's .mcp.json.",
+                    None => "None found in ~/.config/soi/mcp.json (Settings ▸ Tasks), ~/.claude.json, OpenCode's opencode.json or the repository's .mcp.json.",
                 })
                 .wrap(true)
                 .xalign(0.0)
@@ -346,7 +346,7 @@ fn pressed(flow: &gtk::FlowBox) -> Vec<String> {
     names
 }
 
-/// Settings ▸ Collections: choose one, then its name, whether it is the
+/// Settings ▸ Tasks: choose one, then its name, whether it is the
 /// default, and what it chooses.
 struct Page {
     list: RefCell<Vec<Collection>>,
@@ -363,14 +363,6 @@ struct Page {
 
 pub(super) fn collections_page() -> gtk::Widget {
     let page = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    for side in [gtk::PositionType::Top, gtk::PositionType::Bottom] {
-        match side {
-            gtk::PositionType::Top => page.set_margin_top(12),
-            _ => page.set_margin_bottom(12),
-        }
-    }
-    page.set_margin_start(12);
-    page.set_margin_end(12);
     page.append(
         &gtk::Label::builder()
             .label("Skill, command and MCP collections")
@@ -384,7 +376,8 @@ pub(super) fn collections_page() -> gtk::Widget {
                 "Skills, commands and MCP servers to request together, say tdd, /review and a \
                  database server for backend work. New task worktree and Task details offer them. \
                  The default is chosen for new tasks; a group can choose its own (right-click the \
-                 group). Your own are listed here; a repository's show up in the task dialogs.",
+                 group). Your own are listed here; a repository's show up in the task dialogs. \
+                 Shared by all profiles.",
             )
             .xalign(0.0)
             .wrap(true)

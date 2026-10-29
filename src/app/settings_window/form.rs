@@ -1,29 +1,37 @@
-//! The settings of a profile: colors, font, shell and the rest.
+//! The settings of a profile: Settings ▸ Appearance and Settings ▸ Terminal.
 
 use super::*;
 
-/// The General page: the active profile's settings.
-pub(in crate::app) fn settings_form(state: &App) -> gtk::Widget {
-    let current = state.shared.settings.borrow().clone();
-    let profile = state.shared.profile.borrow().clone();
-    let detected = TerminalTheme::detect();
+/// Rows of a label on the left and a setting, with a hint under it, on the
+/// right.
+pub(in crate::app) struct Form {
+    grid: gtk::Grid,
+    next_row: Cell<i32>,
+}
 
-    let grid = gtk::Grid::builder()
-        .row_spacing(8)
-        .column_spacing(12)
-        .margin_top(12)
-        .margin_bottom(12)
-        .margin_start(12)
-        .margin_end(12)
-        .build();
-    let next_row = Cell::new(0);
-    let add_row = |label: &str, widget: &gtk::Widget, hint: &str| {
-        let row = next_row.get();
+impl Form {
+    pub(in crate::app) fn new() -> Self {
+        let grid = gtk::Grid::builder()
+            .row_spacing(8)
+            .column_spacing(12)
+            .margin_top(12)
+            .margin_bottom(12)
+            .margin_start(12)
+            .margin_end(12)
+            .build();
+        Form {
+            grid,
+            next_row: Cell::new(0),
+        }
+    }
+
+    pub(in crate::app) fn row(&self, label: &str, widget: &gtk::Widget, hint: &str) {
+        let row = self.next_row.get();
         let label = gtk::Label::builder().label(label).xalign(0.0).build();
         widget.set_hexpand(true);
-        grid.attach(&label, 0, row, 1, 1);
-        grid.attach(widget, 1, row, 1, 1);
-        next_row.set(row + 1);
+        self.grid.attach(&label, 0, row, 1, 1);
+        self.grid.attach(widget, 1, row, 1, 1);
+        self.next_row.set(row + 1);
         if !hint.is_empty() {
             let hint = gtk::Label::builder()
                 .label(hint)
@@ -31,21 +39,22 @@ pub(in crate::app) fn settings_form(state: &App) -> gtk::Widget {
                 .wrap(true)
                 .css_classes(["dim-label", "caption"])
                 .build();
-            grid.attach(&hint, 1, row + 1, 1, 1);
-            next_row.set(row + 2);
+            self.grid.attach(&hint, 1, row + 1, 1, 1);
+            self.next_row.set(row + 2);
         }
-    };
+    }
 
-    let (picker, naming) = profile_section(state);
-    add_row(
-        "Profile",
-        &picker,
-        "Everything below belongs to this profile. You can also switch from the sidebar.",
-    );
-    add_row("Profile name", &naming, "");
-    let separator = gtk::Separator::new(gtk::Orientation::Horizontal);
-    grid.attach(&separator, 0, next_row.get(), 2, 1);
-    next_row.set(next_row.get() + 1);
+    pub(in crate::app) fn widget(&self) -> gtk::Widget {
+        self.grid.clone().upcast()
+    }
+}
+
+/// Settings ▸ Appearance: colors, fonts, opacity, scale and cursor.
+pub(in crate::app) fn appearance_page(state: &App) -> gtk::Widget {
+    let current = state.shared.settings.borrow().clone();
+    let detected = TerminalTheme::detect();
+    let form = Form::new();
+    let add_row = |label: &str, widget: &gtk::Widget, hint: &str| form.row(label, widget, hint);
 
     // Color scheme
     let schemes = theme::available_schemes();
@@ -366,6 +375,33 @@ pub(in crate::app) fn settings_form(state: &App) -> gtk::Widget {
         "Size of text and terminals in the window, from 75% to 150%.",
     );
 
+    // Cursor
+    let blink = gtk::CheckButton::builder()
+        .label("Blink")
+        .active(current.cursor_blink())
+        .build();
+    let weak = Rc::downgrade(state);
+    blink.connect_toggled(move |check| {
+        if let Some(state) = weak.upgrade() {
+            let on = check.is_active();
+            update_settings(&state, |s| s.cursor_blink = Some(on));
+        }
+    });
+    add_row(
+        "Cursor",
+        blink.upcast_ref(),
+        "Programs can still choose for themselves (e.g. Neovim's insert mode).",
+    );
+    form.widget()
+}
+
+/// Settings ▸ Terminal: what new terminals start, and the notices when
+/// something ends while you look elsewhere.
+pub(in crate::app) fn terminal_page(state: &App) -> gtk::Widget {
+    let current = state.shared.settings.borrow().clone();
+    let form = Form::new();
+    let add_row = |label: &str, widget: &gtk::Widget, hint: &str| form.row(label, widget, hint);
+
     // Shell
     let default_shell = settings::default_shell();
     let shell = gtk::Entry::builder()
@@ -420,24 +456,6 @@ pub(in crate::app) fn settings_form(state: &App) -> gtk::Widget {
         &format!("Default {}.", settings::DEFAULT_SCROLLBACK),
     );
 
-    // Cursor
-    let blink = gtk::CheckButton::builder()
-        .label("Blink")
-        .active(current.cursor_blink())
-        .build();
-    let weak = Rc::downgrade(state);
-    blink.connect_toggled(move |check| {
-        if let Some(state) = weak.upgrade() {
-            let on = check.is_active();
-            update_settings(&state, |s| s.cursor_blink = Some(on));
-        }
-    });
-    add_row(
-        "Cursor",
-        blink.upcast_ref(),
-        "Programs can still choose for themselves (e.g. Neovim's insert mode).",
-    );
-
     // Start directory
     let start_dir = gtk::Entry::builder()
         .text(current.start_dir.clone().unwrap_or_default())
@@ -479,29 +497,49 @@ pub(in crate::app) fn settings_form(state: &App) -> gtk::Widget {
         "Where new terminals (the + button) open. Empty uses your home folder.",
     );
 
+    // Long commands
+    let long = gtk::SpinButton::with_range(0.0, 86_400.0, 5.0);
+    long.set_value(
+        current
+            .long_command
+            .unwrap_or(settings::DEFAULT_LONG_COMMAND) as f64,
+    );
+    let weak = Rc::downgrade(state);
+    long.connect_value_changed(move |spin| {
+        if let Some(state) = weak.upgrade() {
+            let seconds = spin.value() as u32;
+            update_settings(&state, |s| s.long_command = Some(seconds));
+        }
+    });
     add_row(
-        "Worktree commands",
-        worktree_commands(state, &current.worktree_commands).upcast_ref(),
-        "Each opens a tab of its own in a new task worktree, e.g. \"nvim .\". It runs in your shell, which stays when it ends. None by default.",
+        "Long commands",
+        long.upcast_ref(),
+        "Seconds a command must run for Soi to say when it ends while you look elsewhere; 0: never. Needs shell integration.",
     );
 
-    let path = settings::config_path()
-        .and_then(|p| Some(p.parent()?.join("profiles").join(format!("{profile}.conf"))))
-        .map(|p| tilde(&p))
-        .unwrap_or_default();
-    let footer = gtk::Label::builder()
-        .label(format!("Saved to {path}"))
-        .xalign(0.0)
-        .margin_top(8)
-        .css_classes(["dim-label", "caption"])
+    // Desktop notifications
+    let notify = gtk::CheckButton::builder()
+        .label("When Soi isn't in front")
+        .active(current.desktop_notifications())
         .build();
-    grid.attach(&footer, 0, next_row.get(), 2, 1);
-    grid.upcast()
+    let weak = Rc::downgrade(state);
+    notify.connect_toggled(move |check| {
+        if let Some(state) = weak.upgrade() {
+            let on = check.is_active();
+            update_settings(&state, |s| s.desktop_notifications = Some(on));
+        }
+    });
+    add_row(
+        "Desktop notifications",
+        notify.upcast_ref(),
+        "When an agent finishes or asks something, or a long command ends, while you're in another app. Click the notification to go there.",
+    );
+    form.widget()
 }
 
 /// One entry per command, each with a button that removes it, and one that
 /// adds an entry. Every change saves the non-empty ones, in order.
-fn worktree_commands(state: &App, commands: &[String]) -> gtk::Box {
+pub(in crate::app) fn worktree_commands(state: &App, commands: &[String]) -> gtk::Box {
     let column = gtk::Box::new(gtk::Orientation::Vertical, 4);
     let entries = gtk::Box::new(gtk::Orientation::Vertical, 4);
     let save: Rc<dyn Fn()> = {

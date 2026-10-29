@@ -45,7 +45,7 @@ in to each once in a normal terminal:
 | OpenCode | `opencode` | `opencode`, then `/connect` a provider; `opencode models` lists models |
 | Pi | `pi` | `pi`, log in; `pi --list-models` lists models |
 
-soi finds them on the PATH of the shell set in **Settings ▸ General**. It
+soi finds them on the PATH of the shell set in **Settings ▸ Terminal**. It
 also looks in `~/.local/bin`. If soi says an agent "isn't installed or isn't on
 your PATH", make sure your shell's login configuration adds its folder to
 PATH, then restart soi.
@@ -72,7 +72,7 @@ What each install writes:
 Outside soi, all three do nothing. When a newer soi changes them, the button
 says **Reinstall**.
 
-## 4. Choose which agents to start (Settings ▸ Agents ▸ Agents to start)
+## 4. Choose which agents to start (Settings ▸ Tasks ▸ Agents to start)
 
 **New task worktree** and **Task details ▸ Start with brief** offer the agents
 listed here. Each agent starts in a new tab inside the task's worktree, with
@@ -183,7 +183,7 @@ details ▸ Agents**.
 ## Troubleshooting
 
 - **"… isn't installed or isn't on your PATH"**: run `which <program>` in
-  the shell from Settings ▸ General. Add its folder to PATH in that shell's
+  the shell from Settings ▸ Terminal. Add its folder to PATH in that shell's
   login configuration, then restart soi.
 - **The agent starts but shows an API or model error**: the agent's own
   default model doesn't work with your login. Set another one in the agent,

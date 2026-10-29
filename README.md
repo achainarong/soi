@@ -96,10 +96,10 @@ Other ways to install are under [Install](#install).
   copy, jump between commands.
 - **Knows your commands** when the shell marks them (OSC 133): fish does on
   its own, and soi starts bash and zsh with a small script that loads your
-  configuration and adds the marks (Settings ▸ Shell integration; not for
+  configuration and adds the marks (Settings ▸ Terminal; not for
   `bash -l`): commands that failed get a red mark at their prompt,
   Ctrl+Shift+Y copies the last command's output, and a command that ran
-  for 10 seconds or more (Settings ▸ Agents) says so when it ends while you
+  for 10 seconds or more (Settings ▸ Terminal) says so when it ends while you
   look elsewhere (banner, or a desktop notification while you're in
   another app).
   While a program runs that reports its folder (OSC 7, e.g. a nested
@@ -108,7 +108,7 @@ Other ways to install are under [Install](#install).
 - Programs can **change the colors** (OSC 4, 10, 11, 12 and their resets,
   e.g. base16-shell or themes that follow the time of day), and ask
   for them.
-- The cursor **blinks** if you like (Settings ▸ Cursor), or when the
+- The cursor **blinks** if you like (Settings ▸ Appearance), or when the
   program asks for it.
 - **Progress on the tab** for programs that report it (OSC 9;4, as for
   Windows Terminal or Ghostty), and of all of a workspace's tabs in the
@@ -122,7 +122,7 @@ Other ways to install are under [Install](#install).
   one click to jump to it. When an agent stops while you look elsewhere,
   soi marks it in the panel, on its tab and workspace, with a counter and
   a banner. While you're in another app, a desktop notification tells you
-  instead; click it to go to the agent (Settings ▸ Agents turns it off).
+  instead; click it to go to the agent (Settings ▸ Terminal turns it off).
   An agent that asks shows its question in the panel, with a box to
   answer it from there, and each agent shows how long it worked and how
   long it waited for you.
@@ -356,7 +356,7 @@ validated; an unknown provider is saved but cannot launch a resume command.
 
 ### Agents to start
 
-**Settings ▸ Agents ▸ Agents to start** sets up what the agent dropdowns
+**Settings ▸ Tasks ▸ Agents to start** sets up what the agent dropdowns
 in Task details and New task worktree offer: a name, the tool (Claude Code,
 OpenCode or Pi), a model, a variant, a wrapper to start it through and more
 arguments. Add a tool more than once to have it with different models, or
@@ -406,7 +406,7 @@ setup that requires a real terminal should be guarded appropriately.
 
 ### Skill, command and MCP collections
 
-**Settings ▸ Collections** keeps sets of skills, commands and MCP servers you
+**Settings ▸ Tasks** keeps sets of skills, commands and MCP servers you
 request together, say `tdd`, `/review` and a database server for backend
 work. Click **New collection**, name it, and click the skills, commands and
 MCP servers it chooses (the

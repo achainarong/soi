@@ -46,7 +46,7 @@ impl Server {
     }
 }
 
-/// soi's own servers, for Settings ▸ Collections to edit.
+/// soi's own servers, for Settings ▸ Tasks to edit.
 pub fn own_path() -> PathBuf {
     crate::dirs::config_home().join("soi/mcp.json")
 }

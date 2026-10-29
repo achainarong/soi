@@ -1,5 +1,5 @@
 //! Collections of skills, commands and MCP servers to request together (New task
-//! worktree, Task details), as set up in Settings ▸ Agents. One may be the
+//! worktree, Task details), as set up in Settings ▸ Tasks. One may be the
 //! default, chosen for every new task. Kept in
 //! `~/.config/soi/collections.json`.
 

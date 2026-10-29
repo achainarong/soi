@@ -1,5 +1,5 @@
 //! The agents soi can start (Task details, New task worktree), as set up in
-//! Settings ▸ Agents: which tool, and its model and variant, so one tool can
+//! Settings ▸ Tasks: which tool, and its model and variant, so one tool can
 //! be there several times, say OpenCode with Qwen and with GPT. Kept in
 //! `~/.config/soi/agent-presets.json`.
 

@@ -1,4 +1,4 @@
-//! Settings ▸ Agents ▸ Agents to start: the presets the agent dropdowns
+//! Settings ▸ Tasks ▸ Agents to start: the presets the agent dropdowns
 //! offer (see `crate::presets`).
 
 use super::*;
