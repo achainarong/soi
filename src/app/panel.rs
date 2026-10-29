@@ -559,7 +559,7 @@ fn tick(shared: &Rc<Shared>, programs: Vec<(Rc<Tab>, Vec<String>)>) {
 /// Everything the panels show, to redraw them only when it changes.
 fn signature(shared: &Shared) -> String {
     let mut text = String::new();
-    for (tab, agent) in sorted_agents(shared) {
+    for (tab, agent) in agents_by_need(shared) {
         let place = locate(shared, &tab).map(|(state, workspace, _)| {
             let name = state
                 .workspaces
@@ -740,9 +740,17 @@ pub(super) fn next_agent(state: &App) {
     }
 }
 
+/// Every agent, what needs you first (see `AgentState::rank`); agents in
+/// the same state keep the sidebars' order.
+pub(super) fn agents_by_need(shared: &Shared) -> Vec<(Rc<Tab>, Agent)> {
+    let mut agents = sorted_agents(shared);
+    agents.sort_by_key(|(_, agent)| agent.state.rank());
+    agents
+}
+
 /// Every agent, in the order of the sidebars: by window, workspace, pane
-/// and tab. A stable order, so rows don't jump when an agent's state
-/// changes; what needs you is marked instead.
+/// and tab. A stable order, so cycling through agents doesn't skip or
+/// repeat one when a state changes.
 pub(super) fn sorted_agents(shared: &Shared) -> Vec<(Rc<Tab>, Agent)> {
     let mut agents = Vec::new();
     for state in shared.windows() {
@@ -843,7 +851,7 @@ fn search_fields(
 /// Updates every window: panel rows, counter, tab and sidebar dots.
 pub(super) fn refresh(shared: &Rc<Shared>) {
     shared.agents_shown.replace(signature(shared));
-    let agents = sorted_agents(shared);
+    let agents = agents_by_need(shared);
     let unseen = agents.iter().filter(|(_, agent)| agent.unseen).count();
     let windows = shared.windows();
     let now = Instant::now();

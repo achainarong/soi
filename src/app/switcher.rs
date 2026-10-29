@@ -204,7 +204,7 @@ fn choices(shared: &Shared, current: &App) -> Vec<Choice> {
             });
         }
     }
-    for (tab, agent) in panel::sorted_agents(shared) {
+    for (tab, agent) in panel::agents_by_need(shared) {
         let program = agent.program.clone().unwrap_or_default();
         let place = panel::workspace_name(shared, &tab).unwrap_or_default();
         let state = match agent.state {

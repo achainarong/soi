@@ -93,8 +93,8 @@ impl State {
         match self {
             Self::Input => 0,
             Self::Done => 1,
-            Self::Idle => 2,
-            Self::Working => 3,
+            Self::Working => 2,
+            Self::Idle => 3,
             Self::Exited => 4,
         }
     }
@@ -947,6 +947,28 @@ fn write_atomically(path: &Path, text: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_needs_you_ranks_first() {
+        let mut states = [
+            State::Exited,
+            State::Idle,
+            State::Working,
+            State::Done,
+            State::Input,
+        ];
+        states.sort_by_key(|state| state.rank());
+        assert_eq!(
+            states,
+            [
+                State::Input,
+                State::Done,
+                State::Working,
+                State::Idle,
+                State::Exited
+            ]
+        );
+    }
 
     #[test]
     fn reports_reject_oversized_json_and_nul_containing_fields() {
