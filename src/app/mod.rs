@@ -61,9 +61,12 @@ use workspaces::*;
 
 const APP_ID: &str = "dev.soi.Soi";
 const DEV_APP_ID: &str = "dev.soi.Soi.Dev";
-// Also catches shell cwd changes and divider drags without writing unchanged
-// snapshots to disk. New windows and closing windows are saved immediately.
+/// How soon a change soi makes (a tab, a split, a workspace) is saved. New
+/// windows and closing windows are saved immediately; quitting saves all.
 const SAVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+/// How often the session is checked for changes nothing reports: a shell's
+/// `cd`, window sizes, divider drags. A crash loses at most this much.
+const SAVE_CHECK_EVERY: u32 = 60;
 /// How often terminal output is saved, in case soi doesn't quit normally.
 const OUTPUT_SAVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(120);
 /// How long after start the terminals not shown start (see
@@ -442,11 +445,16 @@ fn init_shared(app: &gtk::Application) -> Rc<Shared> {
     panel::install_app_action(app, &shared);
 
     let weak = Rc::downgrade(&shared);
+    let ticks = Cell::new(0u32);
     glib::timeout_add_local(SAVE_INTERVAL, move || match weak.upgrade() {
         Some(shared) => {
-            let started = std::time::Instant::now();
-            save_all(&shared);
-            crate::log::if_slow("session save", started);
+            let check = ticks.get().is_multiple_of(SAVE_CHECK_EVERY);
+            ticks.set(ticks.get().wrapping_add(1));
+            if check || shared.session_dirty.get() {
+                let started = std::time::Instant::now();
+                save_all(&shared);
+                crate::log::if_slow("session save", started);
+            }
             glib::ControlFlow::Continue
         }
         None => glib::ControlFlow::Break,
