@@ -489,11 +489,11 @@ pub(super) fn collections_page() -> gtk::Widget {
 /// soi's own MCP servers, edited as their JSON: those to start only for
 /// some tasks, not with every agent.
 fn own_servers(page: &gtk::Box, state: &Rc<Page>) {
+    page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     page.append(
         &gtk::Label::builder()
             .label("Your MCP servers")
             .xalign(0.0)
-            .margin_top(12)
             .css_classes(["soi-section"])
             .build(),
     );
@@ -505,7 +505,7 @@ fn own_servers(page: &gtk::Box, state: &Rc<Page>) {
                  \"command\", \"args\" and \"env\", or \"type\": \"http\" with \"url\" and \
                  \"headers\". Those in ~/.claude.json, OpenCode's opencode.json and a \
                  repository's .mcp.json are listed too. Kept in {}, readable only by you.",
-                path.display()
+                tilde(&path)
             ))
             .xalign(0.0)
             .wrap(true)
@@ -525,7 +525,7 @@ fn own_servers(page: &gtk::Box, state: &Rc<Page>) {
         &gtk::ScrolledWindow::builder()
             .child(&view)
             .min_content_height(160)
-            .has_frame(true)
+            .css_classes(["soi-code"])
             .build(),
     );
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -534,7 +534,7 @@ fn own_servers(page: &gtk::Box, state: &Rc<Page>) {
         .xalign(0.0)
         .wrap(true)
         .hexpand(true)
-        .css_classes(["caption"])
+        .css_classes(["dim-label", "caption"])
         .build();
     row.append(&save);
     row.append(&status);

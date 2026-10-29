@@ -166,6 +166,13 @@ window.soi-settings spinbutton button {{ background-color: transparent; border: 
 window.soi-settings button:hover, window.soi-settings dropdown > button:hover {{ background-color: {hover}; }}
 window.soi-settings entry:focus-within, window.soi-settings spinbutton:focus-within,
 window.soi-settings button:focus-visible {{ outline-color: {accent}; border-color: {accent}; }}
+window.soi-settings textview, window.soi-settings textview text {{
+  background-color: {field}; color: {fg}; caret-color: {fg};
+}}
+window.soi-settings textview text selection {{ background-color: {selected}; color: {fg}; }}
+window.soi-settings .soi-code {{ border: 1px solid {border}; border-radius: 6px; background-color: {field}; }}
+window.soi-settings .soi-code textview, window.soi-settings .soi-code textview text {{ background-color: transparent; }}
+window.soi-settings .soi-code:focus-within {{ border-color: {accent}; }}
 window.soi-settings scale trough {{ background-color: {border}; }}
 window.soi-settings scale highlight {{ background-color: {accent}; }}
 window.soi-settings scale slider {{ background-color: {fg}; border-color: {border}; }}
