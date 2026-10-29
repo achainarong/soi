@@ -34,6 +34,7 @@ pub fn run() -> gtk::glib::ExitCode {
         Some("install-agents") => std::process::exit(agents::install_agents_command()),
         _ => {}
     }
+    raise_open_file_limit();
     platform::set_gtk_env();
     adopt_old_files();
     log::install_panic_hook();
@@ -44,6 +45,29 @@ pub fn run() -> gtk::glib::ExitCode {
 #[cfg(feature = "gui-tests")]
 pub fn run_gui_tests() -> std::process::ExitCode {
     app::gui_tests::run()
+}
+
+/// Every terminal holds a few descriptors for its PTY, and macOS starts GUI
+/// apps at 256 open files: a restored session with dozens of terminals would
+/// fail to start the rest with "Too many open files". Raise the soft limit.
+fn raise_open_file_limit() {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: limit is a valid rlimit for the call to fill in.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+        return;
+    }
+    // macOS refuses a soft limit above OPEN_MAX, even when the hard one is
+    // higher. Shells inherit the limit too, and some programs slow down or
+    // break with a huge one, so stop there on Linux as well.
+    let wanted = limit.rlim_max.min(10240);
+    if limit.rlim_cur < wanted {
+        limit.rlim_cur = wanted;
+        // SAFETY: limit is a valid rlimit; failure leaves the old limit.
+        unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) };
+    }
 }
 
 /// soi was called rim, and amux before that: takes over their settings and

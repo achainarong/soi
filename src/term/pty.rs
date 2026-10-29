@@ -172,8 +172,10 @@ pub fn spawn(
         .try_clone_to_owned()
         .map_err(|e| e.to_string())?;
     let read_fd = write_fd.try_clone().map_err(|e| e.to_string())?;
-    let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
-    let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    // Each worker reads or writes through its own descriptor; further clones
+    // from portable_pty would only bring a busy app sooner to its file limit.
+    let mut reader = std::fs::File::from(read_fd);
+    let mut writer = std::fs::File::from(write_fd);
     let mut command = CommandBuilder::new(program);
     command.args(&argv[1..]);
     command.cwd(cwd);
@@ -211,7 +213,7 @@ pub fn spawn(
                     Ok(n) => remaining = &remaining[n..],
                     Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
                     Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
-                        if wait_ready(write_fd.as_fd(), libc::POLLOUT).is_err() {
+                        if wait_ready(writer.as_fd(), libc::POLLOUT).is_err() {
                             writer_input.close();
                             return;
                         }
@@ -236,7 +238,7 @@ pub fn spawn(
             match reader.read(&mut buffer) {
                 Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
                 Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
-                    if wait_ready(read_fd.as_fd(), libc::POLLIN).is_err() {
+                    if wait_ready(reader.as_fd(), libc::POLLIN).is_err() {
                         break;
                     }
                 }
@@ -256,7 +258,6 @@ pub fn spawn(
         // On macOS a child exiting with unread output waits until the
         // terminal is drained or its master closed; close ours first.
         drop(reader);
-        drop(read_fd);
         let mut closing = None;
         loop {
             match child.try_wait() {
