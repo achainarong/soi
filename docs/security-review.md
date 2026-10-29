@@ -98,3 +98,34 @@ No dependencies were added.
 
 - A hard crash (abort, SIGKILL, power loss) loses saves still queued, at most
   about a second's worth, as well as changes not yet saved.
+
+## Follow-up: whole-app review (0.1.30)
+
+A source review of the whole app: escape sequences and their replies,
+Kitty graphics, links, the agent socket, Git, task worktrees and plans,
+agent and resume commands, shell integration, saved output, unsafe FFI.
+
+### Fixed
+
+- **Kitty file reads answered which files exist.** Raw-pixel and zlib data
+  match any file, so `OK` or `EBADF` told the program that asked (also one
+  on a server you `ssh` into) whether a file such as `~/.ssh/id_ed25519`
+  exists, and its size. Those reads now come only from `$TMPDIR` or
+  `/tmp`, where programs put the images they send this way; PNGs still
+  come from anywhere.
+- **Plans a repository commits.** An existing plan inside a new task's
+  worktree, e.g. `.soi/plan.md` committed as a symlink, was linked even
+  when it pointed outside the worktree; the editor and agents then read
+  and saved that file. Such plans are no longer linked.
+- **Agent socket folder.** Without `$TMPDIR`, macOS falls back to `/tmp`,
+  where another user could put a socket in place of soi's and receive its
+  reports. The socket is only used in a folder you own that others can't
+  write to.
+
+### Remaining boundaries
+
+- PNG files outside the temporary folders can still be told apart from
+  other files by the answer to a Kitty file request.
+- `git status` and `git diff` run a repository's clean filters (needed for
+  Git LFS); soi only runs Git in repositories you chose for a task.
+- `cargo audit` was not run; no dependency-advisory result is claimed.

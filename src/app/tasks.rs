@@ -437,12 +437,19 @@ pub(super) fn create(state: &App, group: Option<Uuid>) {
             let plan_note = match plan_mode {
                 0 => match crate::plan::create(&path, &task.plan_template()) {
                     Ok(()) => { task.plan = Some(path); None }
+                    // The repository's own file, maybe a symlink out of it.
+                    Err(crate::plan::CreateError::Exists) if path.starts_with(&destination) && crate::plan::leaves(&path, &destination) => {
+                        Some(format!("{} points outside the worktree, so no plan was linked.", path.display()))
+                    }
                     Err(crate::plan::CreateError::Exists) => {
                         task.plan = Some(path.clone());
                         Some(format!("{} already existed. It was linked, not overwritten.", path.display()))
                     }
                     Err(crate::plan::CreateError::Failed(e)) => Some(format!("The plan was not created: {e}")),
                 },
+                1 if path.is_file() && path.starts_with(&destination) && crate::plan::leaves(&path, &destination) => {
+                    Some(format!("{} points outside the worktree, so no plan was linked.", path.display()))
+                }
                 1 if path.is_file() => { task.plan = Some(path); None }
                 1 => Some(format!("{} does not exist, so no plan was linked.", path.display())),
                 _ => None,

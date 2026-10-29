@@ -128,6 +128,16 @@ pub fn save(path: &Path, text: &str, base: Option<&str>) -> Result<(), SaveError
     Ok(())
 }
 
+/// Whether `path`, an existing file under `root`, really lives elsewhere:
+/// a symlink a repository committed can point anywhere. Unresolvable
+/// paths count as elsewhere.
+pub fn leaves(path: &Path, root: &Path) -> bool {
+    match (fs::canonicalize(path), fs::canonicalize(root)) {
+        (Ok(target), Ok(root)) => !target.starts_with(root),
+        _ => true,
+    }
+}
+
 fn temp_path(target: &Path) -> PathBuf {
     let name = target
         .file_name()
@@ -144,6 +154,24 @@ mod tests {
         let root = std::env::temp_dir().join(format!("soi-plan-{}", Uuid::new_v4()));
         fs::create_dir(&root).unwrap();
         root
+    }
+
+    #[test]
+    fn symlinks_out_of_the_root_leave_it() {
+        let root = dir();
+        let worktree = root.join("worktree");
+        fs::create_dir_all(worktree.join(".soi")).unwrap();
+        fs::write(root.join("outside.md"), "secret").unwrap();
+        fs::write(worktree.join("inside.md"), "plan").unwrap();
+        let plan = worktree.join(".soi/plan.md");
+        std::os::unix::fs::symlink("../../outside.md", &plan).unwrap();
+        assert!(leaves(&plan, &worktree));
+        let inner = worktree.join(".soi/inner.md");
+        std::os::unix::fs::symlink("../inside.md", &inner).unwrap();
+        assert!(!leaves(&inner, &worktree));
+        assert!(!leaves(&worktree.join("inside.md"), &worktree));
+        assert!(leaves(&worktree.join("missing.md"), &worktree));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

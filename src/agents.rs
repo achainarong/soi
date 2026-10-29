@@ -514,13 +514,25 @@ impl Report {
 
 /// Where the running soi listens.
 pub fn socket_path() -> Option<PathBuf> {
-    let dir = crate::platform::current().runtime_dir()?;
+    let dir = crate::platform::current()
+        .runtime_dir()
+        .filter(|dir| private(dir))?;
     let name = if crate::dev_mode() {
         "soi-dev.sock"
     } else {
         "soi.sock"
     };
     Some(dir.join(name))
+}
+
+/// Ours, and only we can add files to it. Not a shared folder like `/tmp`
+/// (macOS falls back to it without `$TMPDIR`), where another user could
+/// put a socket of their own in our socket's place and receive our reports.
+fn private(dir: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    let uid = unsafe { libc::geteuid() };
+    fs::metadata(dir).is_ok_and(|m| m.is_dir() && m.uid() == uid && m.mode() & 0o022 == 0)
 }
 
 fn send(socket: &Path, report: &Report) -> io::Result<()> {
@@ -1278,6 +1290,26 @@ mod tests {
         assert!(session("claude", "a; rm -rf ~").resume_command().is_err());
         assert!(session("claude", "--help").resume_command().is_err());
         assert!(SessionMetadata::latest("aider").is_none());
+    }
+
+    #[test]
+    fn sockets_only_go_in_folders_others_cannot_write() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("soi-run-{}", Uuid::new_v4().simple()));
+        fs::create_dir(&dir).unwrap();
+        for (mode, ok) in [
+            (0o700, true),
+            (0o755, true),
+            (0o775, false),
+            (0o1777, false),
+        ] {
+            fs::set_permissions(&dir, fs::Permissions::from_mode(mode)).unwrap();
+            assert_eq!(private(&dir), ok, "mode {mode:o}");
+        }
+        assert!(!private(&dir.join("missing")));
+        // Owned by root, not us.
+        assert!(!private(Path::new("/")) || unsafe { libc::geteuid() } == 0);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

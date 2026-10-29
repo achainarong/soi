@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 
 use base64::Engine;
@@ -520,6 +520,13 @@ fn read_file(control: &Control, path: &[u8]) -> Result<Vec<u8>, String> {
     {
         return Err(denied());
     }
+    // Raw pixels and zlib data look like any file, so the answer would tell
+    // a program (even one on a server you ssh into) which of your files
+    // exist and how large they are. Those come only from temporary folders,
+    // where programs put images they send this way; PNGs from anywhere.
+    if (control.format != 100 || control.compressed) && !in_temp_dir(&path) {
+        return Err(denied());
+    }
     let file = open_image_file(&path).map_err(|_| denied())?;
     let meta = file.metadata().map_err(|_| denied())?;
     if !meta.is_file() || meta.len() > MAX_FILE_BYTES {
@@ -545,6 +552,14 @@ fn read_file(control: &Control, path: &[u8]) -> Result<Vec<u8>, String> {
             _ => true, // raw pixels: the size check in `decode` applies
         };
     if looks_right { Ok(data) } else { Err(denied()) }
+}
+
+/// Whether a canonical `path` is in `$TMPDIR` or `/tmp`.
+fn in_temp_dir(path: &Path) -> bool {
+    [std::env::temp_dir(), PathBuf::from("/tmp")]
+        .iter()
+        .filter_map(|dir| std::fs::canonicalize(dir).ok())
+        .any(|dir| path.starts_with(dir))
 }
 
 /// Open a canonical absolute path relative to pinned directory descriptors.
@@ -895,6 +910,12 @@ mod tests {
             assert_eq!(try_file(&mut graphics, path, ""), denied, "{path}");
         }
         assert_eq!(try_file(&mut graphics, "/etc/passwd", ",O=-5,S=-1"), denied);
+        // Any file passes as raw pixels or zlib data, so those answers would
+        // reveal files outside the temporary folders and their sizes.
+        let outside = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
+        for extra in [",f=24,s=1,v=1", ",f=32,s=1,v=1", ",o=z"] {
+            assert_eq!(try_file(&mut graphics, outside, extra), denied, "{extra}");
+        }
 
         let dir = std::env::temp_dir().join(format!("soi-graphics-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
