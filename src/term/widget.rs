@@ -917,7 +917,10 @@ impl Inner {
         let (area, pending) = (self.area.clone(), self.accessible_pending.clone());
         glib::timeout_add_local_once(ACCESSIBLE_UPDATE, move || {
             pending.set(false);
-            if let Some(area) = area.upgrade() {
+            // A hidden terminal's text is read when it's shown.
+            if let Some(area) = area.upgrade()
+                && area.is_mapped()
+            {
                 area.text_changed();
             }
         });
