@@ -63,7 +63,7 @@ const APP_ID: &str = "dev.soi.Soi";
 const DEV_APP_ID: &str = "dev.soi.Soi.Dev";
 // Also catches shell cwd changes and divider drags without writing unchanged
 // snapshots to disk. New windows and closing windows are saved immediately.
-const SAVE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+const SAVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 /// How often terminal output is saved, in case soi doesn't quit normally.
 const OUTPUT_SAVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(120);
 /// How long after start the terminals not shown start (see
