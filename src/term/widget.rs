@@ -1219,7 +1219,9 @@ impl Inner {
                             };
                         }
                         if !output.is_empty() {
+                            let started = Instant::now();
                             inner.on_output(&output);
+                            crate::log::if_slow("terminal output", started);
                         }
                         if exited {
                             if let Some(on_exit) = inner.on_exit.borrow().as_ref() {
@@ -1604,6 +1606,12 @@ impl Inner {
     /// which it draws on the GPU (the few curved or dashed lines are
     /// drawn with Cairo, in nodes of their own).
     fn draw(&self, area: &TermArea, snapshot: &gtk::Snapshot) {
+        let started = Instant::now();
+        self.draw_frame(area, snapshot);
+        crate::log::if_slow("terminal drawing", started);
+    }
+
+    fn draw_frame(&self, area: &TermArea, snapshot: &gtk::Snapshot) {
         let height = area.height();
         let term = self.term.borrow();
         let look = self.look.borrow();

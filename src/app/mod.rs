@@ -444,7 +444,9 @@ fn init_shared(app: &gtk::Application) -> Rc<Shared> {
     let weak = Rc::downgrade(&shared);
     glib::timeout_add_local(SAVE_INTERVAL, move || match weak.upgrade() {
         Some(shared) => {
+            let started = std::time::Instant::now();
             save_all(&shared);
+            crate::log::if_slow("session save", started);
             glib::ControlFlow::Continue
         }
         None => glib::ControlFlow::Break,
@@ -452,7 +454,9 @@ fn init_shared(app: &gtk::Application) -> Rc<Shared> {
     let weak = Rc::downgrade(&shared);
     glib::timeout_add_local(OUTPUT_SAVE_INTERVAL, move || match weak.upgrade() {
         Some(shared) => {
+            let started = std::time::Instant::now();
             save_output(&shared, &shared.windows());
+            crate::log::if_slow("output save", started);
             glib::ControlFlow::Continue
         }
         None => glib::ControlFlow::Break,

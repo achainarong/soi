@@ -469,7 +469,9 @@ pub(super) fn start(shared: &Rc<Shared>) {
     let weak = Rc::downgrade(shared);
     glib::timeout_add_local(TICK, move || match weak.upgrade() {
         Some(shared) => {
+            let started = std::time::Instant::now();
             tick(&shared);
+            crate::log::if_slow("agent check", started);
             glib::ControlFlow::Continue
         }
         None => glib::ControlFlow::Break,

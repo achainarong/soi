@@ -6,7 +6,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Keeps the log from growing without bound: it starts over beyond this.
 const MAX_LOG_BYTES: u64 = 1024 * 1024;
@@ -31,6 +31,18 @@ pub fn write(message: &str) {
         .unwrap_or(0);
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
         let _ = writeln!(file, "[{seconds}] {message}");
+    }
+}
+
+/// GTK-thread work this long holds up typing and drawing visibly.
+const SLOW: Duration = Duration::from_millis(50);
+
+/// Logs `what` if it kept the GTK thread busy since `started` long enough
+/// to be felt, so freezes can be traced to their cause.
+pub fn if_slow(what: &str, started: Instant) {
+    let took = started.elapsed();
+    if took >= SLOW {
+        write(&format!("slow: {what} took {} ms", took.as_millis()));
     }
 }
 
