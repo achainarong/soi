@@ -33,6 +33,7 @@ pub(super) fn add_main_tab_layout(
     saved: &WorkspaceTab,
     root: &impl IsA<gtk::Widget>,
 ) {
+    state.shared.session_dirty.set(true);
     let Some(ws) = state.workspaces.borrow().get(&workspace).cloned() else {
         return;
     };
@@ -116,6 +117,7 @@ pub(super) fn refresh_main_tabs(ws: &WorkspaceUi) {
 }
 
 pub(super) fn select_main_tab_id(state: &App, workspace: Uuid, id: Uuid) {
+    state.shared.session_dirty.set(true);
     let Some(ws) = state.workspaces.borrow().get(&workspace).cloned() else {
         return;
     };
@@ -237,6 +239,7 @@ pub(super) fn request_close_main_tab(state: &App, workspace: Uuid, id: Uuid) {
 }
 
 pub(super) fn close_main_tab(state: &App, workspace: Uuid, id: Uuid) {
+    state.shared.session_dirty.set(true);
     let Some(ws) = state.workspaces.borrow().get(&workspace).cloned() else {
         return;
     };
@@ -314,6 +317,7 @@ pub(super) fn take_main_tab(
 }
 
 pub(super) fn reorder_main_tab(state: &App, workspace: Uuid, id: Uuid, before: Option<Uuid>) {
+    state.shared.session_dirty.set(true);
     let Some(ws) = state.workspaces.borrow().get(&workspace).cloned() else {
         return;
     };

@@ -326,6 +326,7 @@ impl Slot {
 }
 
 pub(super) fn split_pane(state: &App, pane: &gtk::Box, orientation: gtk::Orientation) {
+    state.shared.session_dirty.set(true);
     unzoom_around(state, pane);
     let Some(info) = state.panes.borrow().get(pane).cloned() else {
         return;
@@ -339,6 +340,7 @@ pub(super) fn split_pane(state: &App, pane: &gtk::Box, orientation: gtk::Orienta
 }
 
 pub(super) fn close_pane(state: &App, pane: &gtk::Box) {
+    state.shared.session_dirty.set(true);
     if state.closing.get() || !state.panes.borrow().contains_key(pane) {
         return;
     }

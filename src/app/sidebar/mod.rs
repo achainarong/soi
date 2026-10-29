@@ -7,6 +7,7 @@ mod drag;
 pub(super) use drag::*;
 
 pub(super) fn rebuild_sidebar(state: &App) {
+    state.shared.session_dirty.set(true);
     finish_inline_renames(state, true);
     state.rebuilding.set(true);
     state.list.remove_all();

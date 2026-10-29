@@ -29,6 +29,7 @@ pub(in crate::app) fn add_command_tab(
     command: Option<Vec<String>>,
     extra_env: &[(String, String)],
 ) -> Option<usize> {
+    state.shared.session_dirty.set(true);
     let info = state.panes.borrow().get(pane).cloned()?;
     if !info.tabs.borrow().is_empty() {
         return None; // One terminal per pane; new terminals belong in main tabs or splits.
@@ -222,6 +223,7 @@ pub(in crate::app) fn tab_index(state: &App, pane: &gtk::Box, tab: &Rc<Tab>) -> 
 
 /// Shows tab `index` of a pane (clamped), focusing it if asked.
 pub(in crate::app) fn activate_tab(state: &App, pane: &gtk::Box, index: usize, focus: bool) {
+    state.shared.session_dirty.set(true);
     let Some(info) = state.panes.borrow().get(pane).cloned() else {
         return;
     };
@@ -284,6 +286,7 @@ pub(in crate::app) fn update_header(header: &gtk::Widget) {
 
 /// Closes a tab; closing the last one closes the pane.
 pub(in crate::app) fn close_tab(state: &App, pane: &gtk::Box, tab: &Rc<Tab>) {
+    state.shared.session_dirty.set(true);
     if state.closing.get() {
         return;
     }

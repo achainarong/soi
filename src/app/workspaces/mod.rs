@@ -159,6 +159,7 @@ pub(super) fn workspace_order(state: &App) -> Vec<Uuid> {
 
 /// Shows a workspace and selects it in the sidebar, expanding its group.
 pub(super) fn select_workspace(state: &App, id: Uuid) {
+    state.shared.session_dirty.set(true);
     let mut expanded = false;
     for node in state.tree.borrow_mut().iter_mut() {
         if let Node::Group {
