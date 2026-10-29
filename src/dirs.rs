@@ -1,11 +1,12 @@
 //! Where soi keeps its files: the XDG base directories, on macOS too (like
 //! Ghostty, Kitty or Neovim there), so settings stay in `~/.config`.
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::{OnceLock, mpsc};
+use std::sync::{Mutex, OnceLock, PoisonError, mpsc};
 
 /// The user's home directory, else `/`.
 pub fn home_dir() -> PathBuf {
@@ -107,6 +108,42 @@ pub fn write_later(job: impl FnOnce() + Send + 'static) {
     }
 }
 
+/// What to do to a file once the writer thread gets to it: write these
+/// bytes (with this mode), or delete it.
+type Pending = Option<(Vec<u8>, u32)>;
+
+fn pending() -> &'static Mutex<HashMap<PathBuf, Pending>> {
+    static PENDING: OnceLock<Mutex<HashMap<PathBuf, Pending>>> = OnceLock::new();
+    PENDING.get_or_init(Mutex::default)
+}
+
+/// `write_atomic` on the writer thread, or deleting the file with `None`.
+/// Only the latest content queued for a path is written, so however slow
+/// the disk, at most one copy of each file waits in memory. What fails is
+/// logged as failing to save `what`.
+pub fn save_later(path: PathBuf, content: Pending, what: &'static str) {
+    let lock = || pending().lock().unwrap_or_else(PoisonError::into_inner);
+    // Already queued: that job writes this newer content instead.
+    if lock().insert(path.clone(), content).is_some() {
+        return;
+    }
+    write_later(move || {
+        let Some(content) = lock().remove(&path) else {
+            return;
+        };
+        let result = match content {
+            Some((bytes, mode)) => write_atomic(&path, &bytes, mode),
+            None => match fs::remove_file(&path) {
+                Err(err) if err.kind() != io::ErrorKind::NotFound => Err(err),
+                _ => Ok(()),
+            },
+        };
+        if let Err(err) = result {
+            crate::log::write(&format!("failed to save {what}: {err}"));
+        }
+    });
+}
+
 /// Waits until the writes queued so far are done: before reading what
 /// they wrote, and before quitting.
 pub fn flush() {
@@ -136,6 +173,35 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn saves_queued_for_a_file_keep_only_the_latest() {
+        let dir = TempDir::new();
+        let path = dir.0.join("state.json");
+        // Holds up the writer thread, as a slow disk would.
+        let (release, wait) = mpsc::channel::<()>();
+        write_later(move || {
+            let _ = wait.recv();
+        });
+        for text in ["one", "two", "three"] {
+            save_later(path.clone(), Some((text.into(), 0o600)), "test");
+        }
+        let queued = pending()
+            .lock()
+            .unwrap()
+            .keys()
+            .filter(|p| **p == path)
+            .count();
+        release.send(()).unwrap();
+        flush();
+        assert_eq!(queued, 1);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "three");
+
+        save_later(path.clone(), Some((b"four".to_vec(), 0o600)), "test");
+        save_later(path.clone(), None, "test");
+        flush();
+        assert!(!path.exists());
     }
 
     fn mode(path: &Path) -> u32 {

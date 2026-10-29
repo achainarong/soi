@@ -27,7 +27,8 @@ fn group_of(pid: u32) -> Option<u32> {
     stat_fields(pid)?.get(2)?.parse().ok()
 }
 
-/// Stops a walk through a fork bomb's descendants.
+/// Stops a walk through a fork bomb's descendants, or a process's threads:
+/// how many of either it reads.
 const MAX_DESCENDANTS: usize = 4096;
 
 /// The members of `group` below `shell`, other than its leader: those the
@@ -42,16 +43,16 @@ fn group_descendants(shell: u32, group: u32) -> Option<Vec<u32>> {
     let mut members = Vec::new();
     let mut pending = vec![shell];
     let mut visited = 0;
-    while let Some(pid) = pending.pop() {
-        visited += 1;
-        if visited > MAX_DESCENDANTS {
-            break;
-        }
+    'walk: while let Some(pid) = pending.pop() {
         // Each thread lists the children it started. Some may exit meanwhile.
         let Ok(threads) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
             continue;
         };
         for thread in threads.flatten() {
+            visited += 1;
+            if visited > MAX_DESCENDANTS {
+                break 'walk;
+            }
             let Ok(children) = std::fs::read_to_string(thread.path().join("children")) else {
                 continue;
             };

@@ -393,24 +393,12 @@ pub mod scrollback {
         fs::read_to_string(path(id)?).ok()
     }
 
-    /// Saves on the writer thread (see `dirs::write_later`), which logs
+    /// Saves on the writer thread (see `dirs::save_later`), which logs
     /// what fails.
     pub fn save(id: Uuid, text: &str) -> io::Result<()> {
         let path = path(id).ok_or_else(|| io::Error::other("no state directory"))?;
-        let text = text.to_owned();
-        crate::dirs::write_later(move || {
-            let result = if text.is_empty() {
-                match fs::remove_file(&path) {
-                    Err(err) if err.kind() != io::ErrorKind::NotFound => Err(err),
-                    _ => Ok(()),
-                }
-            } else {
-                crate::dirs::write_atomic(&path, text.as_bytes(), 0o666)
-            };
-            if let Err(err) = result {
-                crate::log::write(&format!("failed to save output: {err}"));
-            }
-        });
+        let content = (!text.is_empty()).then(|| (text.as_bytes().to_vec(), 0o666));
+        crate::dirs::save_later(path, content, "output");
         Ok(())
     }
 
@@ -461,16 +449,12 @@ impl Session {
     }
 
     /// Writes the session atomically (see `dirs::write_atomic`), on the
-    /// writer thread (see `dirs::write_later`), which logs what fails.
+    /// writer thread (see `dirs::save_later`), which logs what fails.
     pub fn save(&self) -> io::Result<()> {
         let path = session_path()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no home directory"))?;
         let json = serde_json::to_string_pretty(self)?;
-        crate::dirs::write_later(move || {
-            if let Err(err) = crate::dirs::write_atomic(&path, json.as_bytes(), 0o666) {
-                crate::log::write(&format!("failed to save session: {err}"));
-            }
-        });
+        crate::dirs::save_later(path, Some((json.into_bytes(), 0o666)), "session");
         Ok(())
     }
 }
