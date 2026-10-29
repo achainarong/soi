@@ -389,34 +389,48 @@ pub mod scrollback {
     }
 
     pub fn load(id: Uuid) -> Option<String> {
+        crate::dirs::flush();
         fs::read_to_string(path(id)?).ok()
     }
 
+    /// Saves on the writer thread (see `dirs::write_later`), which logs
+    /// what fails.
     pub fn save(id: Uuid, text: &str) -> io::Result<()> {
         let path = path(id).ok_or_else(|| io::Error::other("no state directory"))?;
-        if text.is_empty() {
-            return match fs::remove_file(&path) {
-                Err(err) if err.kind() != io::ErrorKind::NotFound => Err(err),
-                _ => Ok(()),
+        let text = text.to_owned();
+        crate::dirs::write_later(move || {
+            let result = if text.is_empty() {
+                match fs::remove_file(&path) {
+                    Err(err) if err.kind() != io::ErrorKind::NotFound => Err(err),
+                    _ => Ok(()),
+                }
+            } else {
+                crate::dirs::write_atomic(&path, text.as_bytes(), 0o666)
             };
-        }
-        crate::dirs::write_atomic(&path, text.as_bytes(), 0o666)
+            if let Err(err) = result {
+                crate::log::write(&format!("failed to save output: {err}"));
+            }
+        });
+        Ok(())
     }
 
-    /// Deletes saved output of tabs that are gone.
+    /// Deletes saved output of tabs that are gone, on the writer thread.
     pub fn prune(keep: &HashSet<Uuid>) {
-        let Some(entries) = dir().and_then(|dir| fs::read_dir(dir).ok()) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let id = path
-                .file_stem()
-                .and_then(|stem| Uuid::parse_str(&stem.to_string_lossy()).ok());
-            if id.is_none_or(|id| !keep.contains(&id)) {
-                let _ = fs::remove_file(path);
+        let keep = keep.clone();
+        crate::dirs::write_later(move || {
+            let Some(entries) = dir().and_then(|dir| fs::read_dir(dir).ok()) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let id = path
+                    .file_stem()
+                    .and_then(|stem| Uuid::parse_str(&stem.to_string_lossy()).ok());
+                if id.is_none_or(|id| !keep.contains(&id)) {
+                    let _ = fs::remove_file(path);
+                }
             }
-        }
+        });
     }
 }
 
@@ -426,6 +440,7 @@ impl Session {
         let Some(path) = session_path() else {
             return Self::default();
         };
+        crate::dirs::flush();
         match fs::read_to_string(&path) {
             Ok(json) => match serde_json::from_str::<Session>(&json) {
                 Ok(session) => session,
@@ -445,12 +460,18 @@ impl Session {
         }
     }
 
-    /// Writes the session atomically (see `dirs::write_atomic`).
+    /// Writes the session atomically (see `dirs::write_atomic`), on the
+    /// writer thread (see `dirs::write_later`), which logs what fails.
     pub fn save(&self) -> io::Result<()> {
         let path = session_path()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no home directory"))?;
         let json = serde_json::to_string_pretty(self)?;
-        crate::dirs::write_atomic(&path, json.as_bytes(), 0o666)
+        crate::dirs::write_later(move || {
+            if let Err(err) = crate::dirs::write_atomic(&path, json.as_bytes(), 0o666) {
+                crate::log::write(&format!("failed to save session: {err}"));
+            }
+        });
+        Ok(())
     }
 }
 

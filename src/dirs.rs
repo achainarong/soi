@@ -5,6 +5,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::{OnceLock, mpsc};
 
 /// The user's home directory, else `/`.
 pub fn home_dir() -> PathBuf {
@@ -77,6 +78,43 @@ pub fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
         let _ = fs::remove_file(&temp);
     }
     result
+}
+
+type Job = Box<dyn FnOnce() + Send>;
+
+/// The thread that writes state files, so the GTK thread never waits for
+/// the disk (`write_atomic` syncs). Jobs run one at a time, in order.
+fn writer() -> &'static mpsc::Sender<Job> {
+    static WRITER: OnceLock<mpsc::Sender<Job>> = OnceLock::new();
+    WRITER.get_or_init(|| {
+        let (send, receive) = mpsc::channel::<Job>();
+        // Without the thread the receiver is dropped: jobs run where queued.
+        let _ = std::thread::Builder::new()
+            .name("soi-writer".into())
+            .spawn(move || {
+                for job in receive {
+                    job();
+                }
+            });
+        send
+    })
+}
+
+/// Runs `job` on the writer thread, after the jobs queued before it.
+pub fn write_later(job: impl FnOnce() + Send + 'static) {
+    if let Err(mpsc::SendError(job)) = writer().send(Box::new(job)) {
+        job();
+    }
+}
+
+/// Waits until the writes queued so far are done: before reading what
+/// they wrote, and before quitting.
+pub fn flush() {
+    let (done, wait) = mpsc::channel();
+    write_later(move || {
+        let _ = done.send(());
+    });
+    let _ = wait.recv();
 }
 
 #[cfg(test)]

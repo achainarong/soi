@@ -346,6 +346,8 @@ pub fn run() -> glib::ExitCode {
         }
     }
     crate::term::wait_for_shutdown();
+    // Saves still queued on the writer thread would die with the process.
+    crate::dirs::flush();
     result
 }
 
