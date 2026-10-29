@@ -274,18 +274,6 @@ pub(super) fn fill_task_menu(state: &App) {
     }
 }
 
-/// `widget`'s children, their children, and so on.
-pub(super) fn descendants(widget: &gtk::Widget) -> Vec<gtk::Widget> {
-    let mut found = Vec::new();
-    let mut child = widget.first_child();
-    while let Some(widget) = child {
-        found.extend(descendants(&widget));
-        child = widget.next_sibling();
-        found.push(widget);
-    }
-    found
-}
-
 /// Ends the window's terminals once its context is saved, so a closed
 /// window cannot leave hidden shells running; their output stays saved for
 /// when the context comes back.

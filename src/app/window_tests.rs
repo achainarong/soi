@@ -656,10 +656,19 @@ fn tasks_menu_items_show_their_shortcuts() {
                 .and_then(|v| v.get::<String>())
         };
         let default = |id| crate::keybindings::binding(id).unwrap().default_accel();
-        assert_eq!(accel("New task worktree…").as_deref(), Some(default("task-new")));
-        assert_eq!(accel("Inspect changes…").as_deref(), Some(default("task-changes")));
+        assert_eq!(
+            accel("New task worktree…").as_deref(),
+            Some(default("task-new"))
+        );
+        assert_eq!(
+            accel("Inspect changes…").as_deref(),
+            Some(default("task-changes"))
+        );
         // A changed shortcut shows at once; one turned off shows nothing.
-        shared.keybindings.borrow_mut().set("task-history", "<Alt>h");
+        shared
+            .keybindings
+            .borrow_mut()
+            .set("task-history", "<Alt>h");
         shared.keybindings.borrow_mut().set("task-archive", "");
         reload_shortcuts(&shared);
         assert_eq!(accel("Session history…").as_deref(), Some("<Alt>h"));
