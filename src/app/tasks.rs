@@ -2,6 +2,7 @@
 use super::*;
 use crate::presets::Preset;
 use crate::tasks::{AgentSession, History, TaskContext};
+use std::time::{Duration, Instant};
 
 mod dialogs;
 mod history;
@@ -179,26 +180,46 @@ pub(super) fn remove_worktree(state: &App, id: Uuid) {
     );
 }
 
+/// How often git is asked about a folder shown, and about one in a
+/// collapsed group or a window not in use.
+const GIT_SHOWN_EVERY: Duration = Duration::from_secs(5);
+const GIT_HIDDEN_EVERY: Duration = Duration::from_secs(60);
+
 /// Keeps `label` showing the branch, whether it has changes, and the folder
-/// `directory` returns. The folder is checked every second, so following a
-/// terminal's `cd` or focus shows up quickly; git is asked again when it
-/// changes, and otherwise every five seconds.
+/// `directory` returns. While shown in the window in use, the folder is
+/// checked every second, so following a terminal's `cd` or focus shows up
+/// quickly; git is asked again when it changes, and otherwise every five
+/// seconds. Hidden, both wait a minute; shown again, it catches up.
 pub(super) fn watch_git(label: &gtk::Label, directory: impl Fn() -> PathBuf + 'static) {
     let weak = label.downgrade();
     let busy = Rc::new(Cell::new(false));
     let shown: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(None));
-    let ticks = Rc::new(Cell::new(0u32));
+    let asked: Rc<Cell<Option<Instant>>> = Rc::new(Cell::new(None));
     let update = move || {
-        if weak.upgrade().is_none() {
+        let Some(label) = weak.upgrade() else {
             return glib::ControlFlow::Break;
+        };
+        let in_use = label.is_mapped()
+            && label
+                .root()
+                .and_downcast::<gtk::Window>()
+                .is_some_and(|window| window.is_active());
+        let every = if in_use {
+            GIT_SHOWN_EVERY
+        } else {
+            GIT_HIDDEN_EVERY
+        };
+        let due = asked.get().is_none_or(|at| at.elapsed() >= every);
+        if !(in_use || due) || busy.get() {
+            return glib::ControlFlow::Continue;
         }
         let directory = directory();
         let moved = shown.borrow().as_ref() != Some(&directory);
-        let due = ticks.get().is_multiple_of(5);
-        ticks.set(ticks.get().wrapping_add(1));
-        if !(moved || due) || busy.replace(true) {
+        if !(moved || due) {
             return glib::ControlFlow::Continue;
         }
+        busy.set(true);
+        asked.set(Some(Instant::now()));
         *shown.borrow_mut() = Some(directory.clone());
         let (weak, busy) = (weak.clone(), busy.clone());
         background(
@@ -226,7 +247,7 @@ pub(super) fn watch_git(label: &gtk::Label, directory: impl Fn() -> PathBuf + 's
         glib::ControlFlow::Continue
     };
     update();
-    glib::timeout_add_local(std::time::Duration::from_secs(1), update);
+    glib::timeout_add_local(Duration::from_secs(1), update);
 }
 
 /// The New task worktree dialog. The task goes into `group`, or beside the
