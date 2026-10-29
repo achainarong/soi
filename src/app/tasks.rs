@@ -451,11 +451,19 @@ pub(super) fn create(state: &App, group: Option<Uuid>) {
                     if let Some(state) = weak.upgrade() {
                         let mut ws = Workspace::new(directory.clone());
                         ws.name = task.title.clone(); ws.task = Some(Box::new(task));
+                        let workspace = ws.id;
+                        let shell = ws.tabs.first().map(|tab| tab.id);
                         insert_workspace(&state, ws, group);
-                        if let (Some(command), Some(pane)) = (command, current_pane(&state))
-                            && let Err(error) = launch(&state, &pane, &directory, command) {
-                                gtk::AlertDialog::builder().message("Worktree created, but agent could not start")
-                                    .detail(error).build().show(Some(&state.window));
+                        if let (Some(command), Some(pane)) = (command, current_pane(&state)) {
+                            match launch(&state, &pane, &directory, command) {
+                                // The agent's tab comes first: the new
+                                // workspace's shell, still unused, goes.
+                                Ok(()) => if let Some(shell) = shell {
+                                    close_unused_tab(&state, workspace, shell);
+                                },
+                                Err(error) => gtk::AlertDialog::builder().message("Worktree created, but agent could not start")
+                                    .detail(error).build().show(Some(&state.window)),
+                            }
                         }
                         run_worktree_commands(&state, &directory);
                         if !notes.is_empty() {
@@ -470,6 +478,15 @@ pub(super) fn create(state: &App, group: Option<Uuid>) {
         });
     });
     dialog.present();
+}
+
+/// Closes a main tab nobody used yet, without keeping its output or
+/// offering to reopen it.
+fn close_unused_tab(state: &App, workspace: Uuid, id: Uuid) {
+    if let Some((root, _)) = take_main_tab(state, workspace, id) {
+        forget_tree(state, &root);
+    }
+    save_all(&state.shared);
 }
 
 /// Opens a tab in the new worktree for each of the settings' worktree
