@@ -236,12 +236,18 @@ pub(super) fn open(state: &App) {
     files.set_monospace(true);
     details.append(
         &gtk::Label::builder()
-            .label("Skills and commands for the agent")
+            .label("Skills, commands and MCP servers for the agent")
             .xalign(0.0)
             .build(),
     );
-    let requests =
-        requests::Picker::new(&ws.root_dir, &initial.skills, &initial.commands, true, None);
+    let requests = requests::Picker::new(
+        &ws.root_dir,
+        &initial.skills,
+        &initial.commands,
+        &initial.mcps,
+        true,
+        None,
+    );
     details.append(&requests.widget);
     tabs.add_titled(
         &gtk::ScrolledWindow::builder()
@@ -771,6 +777,7 @@ fn form(view: &View) -> Result<TaskContext, String> {
         .collect();
     task.skills = view.requests.skills();
     task.commands = view.requests.commands();
+    task.mcps = view.requests.mcps();
     task.plan = view.plan.path.borrow().clone();
     Ok(task)
 }

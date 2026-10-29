@@ -58,6 +58,9 @@ pub struct TaskContext {
     /// by name without the `/`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<String>,
+    /// MCP servers to start with the agent, by name (see `crate::mcp`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcps: Vec<String>,
     /// The ticket's number, e.g. `PROJ-123`; it names the task's folder.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ticket: Option<String>,
@@ -224,6 +227,7 @@ impl TaskContext {
             checklist: Vec::new(),
             skills: Vec::new(),
             commands: Vec::new(),
+            mcps: Vec::new(),
             ticket: None,
             created: now(),
             folder: None,
@@ -349,6 +353,13 @@ impl TaskContext {
                 command_list(&self.commands)
             ));
         }
+        if self.mcps != old.mcps {
+            changes.push(format!(
+                "MCP servers: {} → {}",
+                skill_list(&old.mcps),
+                skill_list(&self.mcps)
+            ));
+        }
         if self.important_files != old.important_files {
             changes.push("Important files edited".into());
         }
@@ -409,6 +420,9 @@ impl TaskContext {
         }
         if !self.commands.is_empty() {
             out.push_str(&format!("- Commands: {}\n", command_list(&self.commands)));
+        }
+        if !self.mcps.is_empty() {
+            out.push_str(&format!("- MCP servers: {}\n", skill_list(&self.mcps)));
         }
         if self.created > 0 {
             out.push_str(&format!(
@@ -543,6 +557,12 @@ impl TaskContext {
                 }
             }
             out.push('\n');
+        }
+        if !self.mcps.is_empty() {
+            out.push_str(&format!(
+                "## MCP servers\n\nThese MCP servers are meant for this task (soi starts them with the agents it starts): {}\n\n",
+                self.mcps.join(", ")
+            ));
         }
         if !self.important_files.is_empty() {
             out.push_str("## Important files\n\n");

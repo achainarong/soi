@@ -82,9 +82,19 @@ pub(in crate::app) fn agent_command(
     path: &str,
 ) -> Command {
     let tasks = task.folder.as_ref().and_then(|folder| folder.parent());
+    let mut argv = preset.launch_command(brief, tasks, path);
+    let mut env = preset.env(tasks);
+    let servers = crate::mcp::chosen(&task.mcps, &task.repository);
+    let file = crate::mcp::config_file(task.id);
+    if let Err(e) = crate::mcp::apply(&preset.program, &servers, &file, &mut argv, &mut env) {
+        crate::log::write(&format!(
+            "failed to pass MCP servers to {}: {e}",
+            preset.name
+        ));
+    }
     Command {
-        argv: preset.launch_command(brief, tasks, path),
-        env: preset.env(tasks),
+        argv,
+        env,
         agent: Some(preset.program.clone()),
     }
 }

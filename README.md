@@ -404,11 +404,12 @@ cached separately per configured shell; restart Soi after changing shell PATH
 configuration. Normal zsh startup scripts run during discovery, so interactive
 setup that requires a real terminal should be guarded appropriately.
 
-### Skill and command collections
+### Skill, command and MCP collections
 
-**Settings ▸ Collections** keeps sets of skills and commands you request
-together, say `tdd` and `/review` for backend work. Click **New
-collection**, name it, and click the skills and commands it chooses (the
+**Settings ▸ Collections** keeps sets of skills, commands and MCP servers you
+request together, say `tdd`, `/review` and a database server for backend
+work. Click **New collection**, name it, and click the skills, commands and
+MCP servers it chooses (the
 filter narrows long lists; chosen ones move to the front). The dropdown
 switches between collections, the trash button deletes one.
 Tick **Default for new tasks** on one to have New task worktree choose it
@@ -417,6 +418,28 @@ collection, none, or change the toggles for that task. Only your own skills
 and commands are listed there; a repository's show up in the task dialogs.
 They are kept in `~/.config/soi/collections.json`. soi comes with none:
 collections are yours to make.
+
+Skills and commands are only named in the brief, but MCP servers are
+**started with the agent**. Claude Code gets them through
+`--mcp-config <file>`: a file under `~/.local/state/soi/mcp/` that only you
+can read, since servers may carry tokens. OpenCode gets them in
+`OPENCODE_CONFIG_CONTENT`. Pi has no MCP support, so it starts without them.
+The servers to choose from are your own, kept in `~/.config/soi/mcp.json` and
+edited under **Your MCP servers** on the same page, plus those in
+`~/.claude.json` (yours and the repository's), OpenCode's
+`~/.config/opencode/opencode.json` and the repository's `.mcp.json` or
+`opencode.json`. Where two share a name, your own wins. soi only reads the
+agents' files, never changes them. Your own use Claude Code's `.mcp.json`
+form, so keep servers you want only for some tasks there:
+
+```json
+{
+  "mcpServers": {
+    "postgres": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-postgres", "postgresql://localhost/dev"] },
+    "docs": { "type": "http", "url": "https://docs.example.com/mcp" }
+  }
+}
+```
 
 A **group** can have its own: right-click its name, **Collection for new
 tasks**, and pick one (or **The default collection** again). A new task
@@ -449,10 +472,10 @@ Open **Tasks** in the sidebar toolbar:
   it. An existing file is linked, never overwritten. Optionally start one of
   your agents (see [Agents to start](#agents-to-start)) in a new tab, change
   its model for this start, and tick **Give the agent the task brief** to
-  pass the brief as its first prompt. Click the **skills** and **commands**
-  you want the agent to use (several if you like; hover one for its
-  description), or choose a **collection** of them (see
-  [Skill and command collections](#skill-and-command-collections)); the
+  pass the brief as its first prompt. Click the **skills**, **commands** and
+  **MCP servers** you want the agent to use (several if you like; hover one
+  for its description), or choose a **collection** of them (see
+  [Skill, command and MCP collections](#skill-command-and-mcp-collections)); the
   group's collection, or else the default collection, is chosen to begin
   with. soi lists skills in
   `~/.claude/skills`, `~/.agents/skills`, `~/.codex/skills`, OpenCode's and
@@ -501,7 +524,7 @@ Open **Tasks** in the sidebar toolbar:
   - **Details**: name, status (Active, Blocked, Ready for review, Finished), ticket number,
     issue link (a reference only; nothing is imported or fetched),
     description, acceptance criteria, a checklist, important files and the
-    skills and commands to request (choosing a collection replaces them with
+    skills, commands and MCP servers to request (choosing a collection replaces them with
     its own).
     Relative paths resolve inside the workspace. Agent activity never changes
     task status. Every agent in the workspace inherits its task; the agents
@@ -622,7 +645,8 @@ for its own settings. `$XDG_CONFIG_HOME` and `$XDG_STATE_HOME` override the defa
 | `~/.config/soi/profiles/<name>.conf` | A profile's settings |
 | `~/.config/soi/keybindings.conf` | Changed shortcuts |
 | `~/.config/soi/agent-presets.json` | Agents to start |
-| `~/.config/soi/collections.json` | Skill and command collections |
+| `~/.config/soi/collections.json` | Skill, command and MCP collections |
+| `~/.config/soi/mcp.json` | Your MCP servers for collections and tasks |
 
 Shells started by soi have `TERM_PROGRAM=soi` set, so shell configs can
 tell (e.g. to pick a fastfetch logo type).

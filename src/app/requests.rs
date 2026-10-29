@@ -1,11 +1,11 @@
-//! Choosing the skills and commands to request for a task, one toggle each,
-//! and the collections that choose several at once (see `crate::skills`,
-//! `crate::collections`).
+//! Choosing the skills, commands and MCP servers to request for a task, one
+//! toggle each, and the collections that choose several at once (see
+//! `crate::skills`, `crate::mcp`, `crate::collections`).
 use super::*;
 use crate::collections::{self, Collection};
 use crate::skills::{self, Item, Kind};
 
-type Changed = Rc<dyn Fn(Vec<String>, Vec<String>)>;
+type Changed = Rc<dyn Fn(Vec<String>, Vec<String>, Vec<String>)>;
 
 pub(super) struct Picker {
     pub(super) widget: gtk::Box,
@@ -14,22 +14,25 @@ pub(super) struct Picker {
     collections: Vec<Collection>,
     skills: gtk::FlowBox,
     commands: gtk::FlowBox,
+    mcps: gtk::FlowBox,
     /// How many are chosen.
     summary: gtk::Label,
     repository: RefCell<PathBuf>,
-    /// Told what is pressed when a toggle changes: skills, commands.
+    /// Told what is pressed when a toggle changes: skills, commands, MCP
+    /// servers.
     on_change: Rc<RefCell<Option<Changed>>>,
 }
 
 impl Picker {
-    /// Toggles for what is found for `repository`, with `skills` and
-    /// `commands` pressed; those no longer there stay listed. With
+    /// Toggles for what is found for `repository`, with `skills`,
+    /// `commands` and `mcps` pressed; those no longer there stay listed. With
     /// `collections`, a dropdown above chooses a collection's instead, and
     /// the collection named `choose` is chosen to begin with.
     pub(super) fn new(
         repository: &Path,
         skills: &[String],
         commands: &[String],
+        mcps: &[String],
         collections: bool,
         choose: Option<&str>,
     ) -> Rc<Self> {
@@ -45,7 +48,7 @@ impl Picker {
                 .collect();
             let dropdown = gtk::DropDown::from_strings(&names);
             dropdown.set_tooltip_text(Some(
-                "Chooses the collection's skills and commands; make collections in Settings ▸ Collections",
+                "Chooses the collection's skills, commands and MCP servers; make collections in Settings ▸ Collections",
             ));
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
             row.append(&gtk::Label::new(Some("Collection")));
@@ -55,7 +58,7 @@ impl Picker {
         });
         let top = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let search = gtk::SearchEntry::builder()
-            .placeholder_text("Filter skills and commands")
+            .placeholder_text("Filter skills, commands and MCP servers")
             .hexpand(true)
             .build();
         let summary = gtk::Label::builder()
@@ -84,7 +87,8 @@ impl Picker {
         };
         let skill_flow = flow("Skills: the brief names them");
         let command_flow = flow("Commands: the brief asks to run them");
-        for flow in [&skill_flow, &command_flow] {
+        let mcp_flow = flow("MCP servers: started with Claude Code and OpenCode");
+        for flow in [&skill_flow, &command_flow, &mcp_flow] {
             let search = search.clone();
             flow.set_filter_func(move |row| {
                 let query = search.text().to_lowercase();
@@ -97,7 +101,7 @@ impl Picker {
             });
         }
         // Chosen first, then by name.
-        for flow in [&skill_flow, &command_flow] {
+        for flow in [&skill_flow, &command_flow, &mcp_flow] {
             flow.set_sort_func(|a, b| {
                 let key = |row: &gtk::FlowBoxChild| {
                     let toggle = row.child().and_downcast::<gtk::ToggleButton>();
@@ -108,9 +112,13 @@ impl Picker {
                 key(a).cmp(&key(b)).into()
             });
         }
-        let flows = (skill_flow.downgrade(), command_flow.downgrade());
+        let flows = [
+            skill_flow.downgrade(),
+            command_flow.downgrade(),
+            mcp_flow.downgrade(),
+        ];
         search.connect_search_changed(move |_| {
-            for flow in [&flows.0, &flows.1] {
+            for flow in &flows {
                 if let Some(flow) = flow.upgrade() {
                     flow.invalidate_filter();
                 }
@@ -122,6 +130,7 @@ impl Picker {
             collections: list,
             skills: skill_flow,
             commands: command_flow,
+            mcps: mcp_flow,
             summary,
             repository: RefCell::new(repository.to_path_buf()),
             on_change: Rc::default(),
@@ -131,9 +140,9 @@ impl Picker {
             (Some(dropdown), Some(i)) => {
                 dropdown.set_selected(i as u32 + 1);
                 let c = &picker.collections[i];
-                picker.set(&c.skills, &c.commands);
+                picker.set(&c.skills, &c.commands, &c.mcps);
             }
-            _ => picker.set(skills, commands),
+            _ => picker.set(skills, commands, mcps),
         }
         if let Some(dropdown) = &picker.collection {
             let weak = Rc::downgrade(&picker);
@@ -143,7 +152,7 @@ impl Picker {
                     .checked_sub(1)
                     .and_then(|i| picker.collections.get(i));
                 if let Some(c) = chosen {
-                    picker.set(&c.skills, &c.commands);
+                    picker.set(&c.skills, &c.commands, &c.mcps);
                 }
             });
         }
@@ -156,6 +165,10 @@ impl Picker {
 
     pub(super) fn commands(&self) -> Vec<String> {
         pressed(&self.commands)
+    }
+
+    pub(super) fn mcps(&self) -> Vec<String> {
+        pressed(&self.mcps)
     }
 
     /// The collection chosen in the dropdown, if any.
@@ -176,72 +189,99 @@ impl Picker {
     /// Lists what is found for another repository, keeping what is pressed.
     pub(super) fn set_repository(&self, repository: &Path) {
         self.repository.replace(repository.to_path_buf());
-        self.set(&self.skills(), &self.commands());
+        self.set(&self.skills(), &self.commands(), &self.mcps());
     }
 
     /// Tells `f` what is pressed whenever a toggle changes.
-    pub(super) fn connect_changed(&self, f: impl Fn(Vec<String>, Vec<String>) + 'static) {
+    pub(super) fn connect_changed(
+        &self,
+        f: impl Fn(Vec<String>, Vec<String>, Vec<String>) + 'static,
+    ) {
         self.on_change.replace(Some(Rc::new(f)));
     }
 
-    fn set(&self, skills: &[String], commands: &[String]) {
+    fn set(&self, skills: &[String], commands: &[String], mcps: &[String]) {
         let repository = self.repository.borrow().clone();
         // Weak, so the toggles don't keep the picker or each other.
-        let (weak_skills, weak_commands, weak_summary, on_change) = (
+        let (weak_skills, weak_commands, weak_mcps, weak_summary, on_change) = (
             self.skills.downgrade(),
             self.commands.downgrade(),
+            self.mcps.downgrade(),
             self.summary.downgrade(),
             self.on_change.clone(),
         );
         let notify: Rc<dyn Fn()> = Rc::new(move || {
-            let (Some(skills), Some(commands), Some(summary)) = (
+            let (Some(skills), Some(commands), Some(mcps), Some(summary)) = (
                 weak_skills.upgrade(),
                 weak_commands.upgrade(),
+                weak_mcps.upgrade(),
                 weak_summary.upgrade(),
             ) else {
                 return;
             };
             skills.invalidate_sort();
             commands.invalidate_sort();
-            let (skills, commands) = (pressed(&skills), pressed(&commands));
-            summary.set_label(&summarize(skills.len(), commands.len()));
+            mcps.invalidate_sort();
+            let (skills, commands, mcps) = (pressed(&skills), pressed(&commands), pressed(&mcps));
+            summary.set_label(&summarize(skills.len(), commands.len(), mcps.len()));
             let f = on_change.borrow().clone();
             if let Some(f) = f {
-                f(skills, commands);
+                f(skills, commands, mcps);
             }
         });
-        fill(&self.skills, Kind::Skill, &repository, skills, &notify);
+        let found = |kind| skills::discover(kind, &repository);
+        fill(
+            &self.skills,
+            Some(Kind::Skill),
+            found(Kind::Skill),
+            skills,
+            &notify,
+        );
         fill(
             &self.commands,
-            Kind::Command,
-            &repository,
+            Some(Kind::Command),
+            found(Kind::Command),
             commands,
             &notify,
         );
-        self.summary
-            .set_label(&summarize(self.skills().len(), self.commands().len()));
+        let servers = crate::mcp::discover(&repository)
+            .into_iter()
+            .map(|server| Item {
+                description: server.description(),
+                name: server.name,
+                path: server.path,
+            })
+            .collect();
+        fill(&self.mcps, None, servers, mcps, &notify);
+        self.summary.set_label(&summarize(
+            self.skills().len(),
+            self.commands().len(),
+            self.mcps().len(),
+        ));
     }
 }
 
-/// `2 skills, 1 command chosen`.
-fn summarize(skills: usize, commands: usize) -> String {
+/// `2 skills, 1 command, 0 MCP servers chosen`.
+fn summarize(skills: usize, commands: usize, mcps: usize) -> String {
     let plural = |n: usize, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
     format!(
-        "{}, {} chosen",
+        "{}, {}, {} chosen",
         plural(skills, "skill"),
-        plural(commands, "command")
+        plural(commands, "command"),
+        plural(mcps, "MCP server")
     )
 }
 
+/// Toggles for `items` in `flow`: skills, commands, or MCP servers (no
+/// `kind`).
 fn fill(
     flow: &gtk::FlowBox,
-    kind: Kind,
-    repository: &Path,
+    kind: Option<Kind>,
+    mut items: Vec<Item>,
     selected: &[String],
     on_change: &Rc<dyn Fn()>,
 ) {
     flow.remove_all();
-    let mut items = skills::discover(kind, repository);
     for name in selected {
         if !items.iter().any(|item| &item.name == name) {
             items.push(Item {
@@ -255,8 +295,9 @@ fn fill(
         flow.append(
             &gtk::Label::builder()
                 .label(match kind {
-                    Kind::Skill => "None found in ~/.claude/skills, ~/.agents/skills or the repository's .claude/skills and .agents/skills.",
-                    Kind::Command => "None found in ~/.claude/commands, ~/.codex/prompts or the repository's .claude/commands.",
+                    Some(Kind::Skill) => "None found in ~/.claude/skills, ~/.agents/skills or the repository's .claude/skills and .agents/skills.",
+                    Some(Kind::Command) => "None found in ~/.claude/commands, ~/.codex/prompts or the repository's .claude/commands.",
+                    None => "None found in ~/.config/soi/mcp.json (Settings ▸ Collections), ~/.claude.json, OpenCode's opencode.json or the repository's .mcp.json.",
                 })
                 .wrap(true)
                 .xalign(0.0)
@@ -265,7 +306,7 @@ fn fill(
         );
         return;
     }
-    let prefix = if kind == Kind::Command { "/" } else { "" };
+    let prefix = if kind == Some(Kind::Command) { "/" } else { "" };
     for item in items {
         let toggle = gtk::ToggleButton::builder()
             .label(format!("{prefix}{}", item.name))
@@ -332,7 +373,7 @@ pub(super) fn collections_page() -> gtk::Widget {
     page.set_margin_end(12);
     page.append(
         &gtk::Label::builder()
-            .label("Skill and command collections")
+            .label("Skill, command and MCP collections")
             .xalign(0.0)
             .css_classes(["soi-section"])
             .build(),
@@ -340,10 +381,10 @@ pub(super) fn collections_page() -> gtk::Widget {
     page.append(
         &gtk::Label::builder()
             .label(
-                "Skills and commands to request together, say tdd and /review for backend work. \
-                 New task worktree and Task details offer them. The default is chosen for new \
-                 tasks; a group can choose its own (right-click the group). Your own skills and \
-                 commands are listed here; a repository's show up in the task dialogs.",
+                "Skills, commands and MCP servers to request together, say tdd, /review and a \
+                 database server for backend work. New task worktree and Task details offer them. \
+                 The default is chosen for new tasks; a group can choose its own (right-click the \
+                 group). Your own are listed here; a repository's show up in the task dialogs.",
             )
             .xalign(0.0)
             .wrap(true)
@@ -423,7 +464,7 @@ pub(super) fn collections_page() -> gtk::Widget {
         let weak = Rc::downgrade(&state);
         gtk::AlertDialog::builder()
             .message(format!("Delete the collection “{name}”?"))
-            .detail("Tasks keep the skills and commands they were given.")
+            .detail("Tasks keep the skills, commands and MCP servers they were given.")
             .buttons(["Cancel", "Delete"])
             .cancel_button(0)
             .default_button(0)
@@ -437,11 +478,82 @@ pub(super) fn collections_page() -> gtk::Widget {
                 }
             });
     });
+    own_servers(&page, &state);
     // The page keeps its state; the handlers only refer to it.
     page.connect_destroy(move |_| {
         let _ = &state;
     });
     page.upcast()
+}
+
+/// soi's own MCP servers, edited as their JSON: those to start only for
+/// some tasks, not with every agent.
+fn own_servers(page: &gtk::Box, state: &Rc<Page>) {
+    page.append(
+        &gtk::Label::builder()
+            .label("Your MCP servers")
+            .xalign(0.0)
+            .margin_top(12)
+            .css_classes(["soi-section"])
+            .build(),
+    );
+    let path = crate::mcp::own_path();
+    page.append(
+        &gtk::Label::builder()
+            .label(format!(
+                "Servers for collections and tasks to start, as in Claude Code's .mcp.json: \
+                 \"command\", \"args\" and \"env\", or \"type\": \"http\" with \"url\" and \
+                 \"headers\". Those in ~/.claude.json, OpenCode's opencode.json and a \
+                 repository's .mcp.json are listed too. Kept in {}, readable only by you.",
+                path.display()
+            ))
+            .xalign(0.0)
+            .wrap(true)
+            .css_classes(["dim-label", "caption"])
+            .build(),
+    );
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|_| crate::mcp::OWN_TEMPLATE.into());
+    let view = gtk::TextView::builder()
+        .monospace(true)
+        .top_margin(6)
+        .bottom_margin(6)
+        .left_margin(6)
+        .right_margin(6)
+        .build();
+    view.buffer().set_text(&text);
+    page.append(
+        &gtk::ScrolledWindow::builder()
+            .child(&view)
+            .min_content_height(160)
+            .has_frame(true)
+            .build(),
+    );
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let save = gtk::Button::with_label("Save MCP servers");
+    let status = gtk::Label::builder()
+        .xalign(0.0)
+        .wrap(true)
+        .hexpand(true)
+        .css_classes(["caption"])
+        .build();
+    row.append(&save);
+    row.append(&status);
+    page.append(&row);
+    let weak = Rc::downgrade(state);
+    save.connect_clicked(move |_| {
+        let buffer = view.buffer();
+        let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+        match crate::mcp::save_own(&text) {
+            Ok(()) => {
+                status.set_label("Saved.");
+                // The collection's toggles list them now.
+                if let Some(state) = weak.upgrade() {
+                    show_collection(&state);
+                }
+            }
+            Err(e) => status.set_label(&format!("Not saved: {e}")),
+        }
+    });
 }
 
 fn store(list: &RefCell<Vec<Collection>>) {
@@ -487,7 +599,7 @@ fn show_collection(state: &Rc<Page>) {
     let Some(collection) = state.list.borrow().get(i).cloned() else {
         state.editor.append(
             &gtk::Label::builder()
-                .label("No collections yet. Click New collection, name it, and click the skills and commands it should choose.")
+                .label("No collections yet. Click New collection, name it, and click the skills, commands and MCP servers it should choose.")
                 .xalign(0.0)
                 .wrap(true)
                 .css_classes(["dim-label"])
@@ -511,6 +623,7 @@ fn show_collection(state: &Rc<Page>) {
         &crate::dirs::home_dir(),
         &collection.skills,
         &collection.commands,
+        &collection.mcps,
         false,
         None,
     );
@@ -543,11 +656,12 @@ fn show_collection(state: &Rc<Page>) {
         state.updating.set(false);
     });
     let weak = Rc::downgrade(state);
-    picker.connect_changed(move |skills, commands| {
+    picker.connect_changed(move |skills, commands, mcps| {
         let Some(state) = weak.upgrade() else { return };
         if let Some(c) = state.list.borrow_mut().get_mut(i) {
             c.skills = skills;
             c.commands = commands;
+            c.mcps = mcps;
         }
         store(&state.list);
     });

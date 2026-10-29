@@ -1,4 +1,4 @@
-//! Collections of skills and commands to request together (New task
+//! Collections of skills, commands and MCP servers to request together (New task
 //! worktree, Task details), as set up in Settings ▸ Agents. One may be the
 //! default, chosen for every new task. Kept in
 //! `~/.config/soi/collections.json`.
@@ -18,6 +18,9 @@ pub struct Collection {
     /// By name without the `/`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<String>,
+    /// MCP servers to start with the agent, by name (see `crate::mcp`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcps: Vec<String>,
     /// Chosen for new tasks; at most one is.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub default: bool,
@@ -67,6 +70,7 @@ mod tests {
                 name: "Backend".into(),
                 skills: vec!["tdd".into()],
                 commands: vec!["review".into()],
+                mcps: vec!["github".into()],
                 default: true,
             },
             Collection {

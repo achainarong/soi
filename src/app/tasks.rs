@@ -289,7 +289,7 @@ pub(super) fn create(state: &App, group: Option<Uuid>) {
     let acceptance = text_area(&content, "Acceptance criteria (optional)", 60);
     let branch = field(&content, "New branch", "");
     let repository = field(&content, "Repository", &path_text(&root));
-    let requests = requests::Picker::new(&root, &[], &[], true, chosen.as_deref());
+    let requests = requests::Picker::new(&root, &[], &[], &[], true, chosen.as_deref());
     if let Some(row) = requests.take_collection_row() {
         content.append(&row);
     }
@@ -398,7 +398,7 @@ pub(super) fn create(state: &App, group: Option<Uuid>) {
         let description = buffer_text(&description).trim_end().to_string();
         let acceptance = buffer_text(&acceptance).trim_end().to_string();
         let checklist = crate::tasks::parse_checklist(&buffer_text(&checklist));
-        let (skills, commands, collection) = (requests.skills(), requests.commands(), requests.collection());
+        let (skills, commands, mcps, collection) = (requests.skills(), requests.commands(), requests.mcps(), requests.collection());
         let (plan_mode, plan) = (plan_mode.selected(), plan.text().to_string());
         if plan_mode == 1 && plan.trim().is_empty() { advanced.set_expanded(true); error.set_label("Enter the existing plan's path."); return; }
         let preset = (agent.selected() as usize).checked_sub(1).and_then(|i| presets.get(i))
@@ -426,6 +426,7 @@ pub(super) fn create(state: &App, group: Option<Uuid>) {
             task.checklist = checklist;
             task.skills = skills;
             task.commands = commands;
+            task.mcps = mcps;
             // Worktrees of one repository share its folder of tasks.
             let main = crate::git::main_repository(&root).unwrap_or(root);
             let folder = task.task_folder(&crate::tasks::project_folder(&main));
@@ -456,12 +457,13 @@ pub(super) fn create(state: &App, group: Option<Uuid>) {
             };
             let command = preset.as_ref().map(|p| agent_command(p, with_brief.then(|| task.brief(&destination)), &task, &agent_path));
             let mut events = vec![format!("Created on branch {branch}, worktree {}", destination.display())];
-            if !task.skills.is_empty() || !task.commands.is_empty() {
+            if !task.skills.is_empty() || !task.commands.is_empty() || !task.mcps.is_empty() {
                 let from = collection.map(|name| format!(" (from collection {name})")).unwrap_or_default();
                 events.push(format!(
-                    "Requested skills: {}; commands: {}{from}",
+                    "Requested skills: {}; commands: {}; MCP servers: {}{from}",
                     crate::tasks::skill_list(&task.skills),
-                    crate::tasks::command_list(&task.commands)
+                    crate::tasks::command_list(&task.commands),
+                    crate::tasks::skill_list(&task.mcps)
                 ));
             }
             if let Some(preset) = &preset {

@@ -2566,7 +2566,8 @@ fn skills_commands_and_collections_are_picked_by_clicking() {
                 fs::create_dir_all(home.join(path).parent().unwrap()).unwrap();
                 fs::write(home.join(path), text).unwrap();
             }
-            let nothing = super::requests::Picker::new(&home, &[], &[], true, None);
+            crate::mcp::save_own(r#"{"mcpServers":{"db":{"command":"db-mcp"}}}"#).unwrap();
+            let nothing = super::requests::Picker::new(&home, &[], &[], &[], true, None);
             assert!(nothing.skills().is_empty() && nothing.collection().is_none());
 
             // A collection made in Settings ▸ Collections, by clicking.
@@ -2595,6 +2596,7 @@ fn skills_commands_and_collections_are_picked_by_clicking() {
             tdd.set_active(true);
             assert!(tdd.has_css_class("soi-chip"), "chosen toggles are styled");
             toggle(&page, "/review").unwrap().set_active(true);
+            toggle(&page, "db").unwrap().set_active(true);
             find::<gtk::CheckButton>(&page, &|c| {
                 c.label().as_deref() == Some("Default for new tasks")
             })
@@ -2605,6 +2607,7 @@ fn skills_commands_and_collections_are_picked_by_clicking() {
             assert_eq!(list[0].name, "C++");
             assert_eq!(list[0].skills, ["tdd"]);
             assert_eq!(list[0].commands, ["review"]);
+            assert_eq!(list[0].mcps, ["db"]);
             assert!(list[0].default);
             let dropdown = find::<gtk::DropDown>(&page, &|_| true).unwrap();
             let names = dropdown.model().and_downcast::<gtk::StringList>().unwrap();
@@ -2637,10 +2640,12 @@ fn skills_commands_and_collections_are_picked_by_clicking() {
 
             // The default is chosen for a new task, toggles and all.
             let default = crate::collections::default_name(&crate::collections::load());
-            let picker = super::requests::Picker::new(&home, &[], &[], true, default.as_deref());
+            let picker =
+                super::requests::Picker::new(&home, &[], &[], &[], true, default.as_deref());
             assert_eq!(picker.collection().as_deref(), Some("C++"));
             assert_eq!(picker.skills(), ["tdd"]);
             assert_eq!(picker.commands(), ["review"]);
+            assert_eq!(picker.mcps(), ["db"]);
             toggle(&picker.widget.clone().upcast(), "grill")
                 .unwrap()
                 .set_active(true);
@@ -2656,7 +2661,7 @@ fn skills_commands_and_collections_are_picked_by_clicking() {
                 .set_active(false);
             assert_eq!(first.index(), 0, "tdd, chosen, before grill");
             // Task details keep what the task has, not the default.
-            let saved = super::requests::Picker::new(&home, &["gone".into()], &[], true, None);
+            let saved = super::requests::Picker::new(&home, &["gone".into()], &[], &[], true, None);
             assert_eq!(saved.skills(), ["gone"]);
             assert!(saved.commands().is_empty());
         },

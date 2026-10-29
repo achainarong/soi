@@ -6,6 +6,7 @@ mod git;
 mod keybindings;
 mod log;
 mod markdown;
+mod mcp;
 mod plan;
 mod platform;
 mod presets;
