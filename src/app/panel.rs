@@ -467,11 +467,10 @@ fn command_finished(shared: &Rc<Shared>, tab: &Rc<Tab>, finished: &crate::term::
 /// Starts watching the terminals of all windows.
 pub(super) fn start(shared: &Rc<Shared>) {
     let weak = Rc::downgrade(shared);
+    let checking = Rc::new(Cell::new(false));
     glib::timeout_add_local(TICK, move || match weak.upgrade() {
         Some(shared) => {
-            let started = std::time::Instant::now();
-            tick(&shared);
-            crate::log::if_slow("agent check", started);
+            check(&shared, &checking);
             glib::ControlFlow::Continue
         }
         None => glib::ControlFlow::Break,
@@ -497,12 +496,54 @@ fn agent_names(shared: &Shared) -> Vec<String> {
     agents::agent_list(shared.settings.borrow().agents.as_deref())
 }
 
-/// Looks at every terminal: which agent runs there, and is it busy?
-fn tick(shared: &Rc<Shared>) {
+/// Looks at every terminal: which agent runs there, and is it busy? Which
+/// programs run is read from `/proc` on a worker thread, so however many
+/// terminals there are, typing never waits for it; one check at a time.
+fn check(shared: &Rc<Shared>, checking: &Rc<Cell<bool>>) {
+    if checking.replace(true) {
+        return;
+    }
+    let tabs: Vec<(Weak<Tab>, Option<u32>)> = live_tabs(shared)
+        .iter()
+        .map(|tab| (Rc::downgrade(tab), tab.terminal.pid()))
+        .collect();
+    let pids: Vec<Option<u32>> = tabs.iter().map(|(_, pid)| *pid).collect();
+    let (weak, checking) = (Rc::downgrade(shared), checking.clone());
+    super::tasks::background(
+        move || {
+            pids.into_iter()
+                .map(|pid| pid.map(|pid| crate::platform::current().foreground_programs(pid)))
+                .collect::<Vec<_>>()
+        },
+        move |found| {
+            checking.set(false);
+            let Some(shared) = weak.upgrade() else { return };
+            let started = Instant::now();
+            let programs = tabs
+                .into_iter()
+                .zip(found)
+                .filter_map(|((tab, pid), found)| {
+                    let tab = tab.upgrade()?;
+                    // A terminal that started again meanwhile waits a check.
+                    if tab.terminal.pid() != pid {
+                        return None;
+                    }
+                    let programs = found
+                        .map_or_else(Vec::new, |found| tab.terminal.running_programs_from(found));
+                    Some((tab, programs))
+                });
+            tick(&shared, programs.collect());
+            crate::log::if_slow("agent check", started);
+        },
+    );
+}
+
+/// Updates the agents from the programs their terminals run.
+fn tick(shared: &Rc<Shared>, programs: Vec<(Rc<Tab>, Vec<String>)>) {
     let names = agent_names(shared);
     let now = Instant::now();
-    for tab in live_tabs(shared) {
-        observe(&tab, &names, now);
+    for (tab, programs) in programs {
+        observe(&tab, &programs, &names, now);
         if is_visible(&tab) && tab.agent.borrow_mut().seen() {
             withdraw_notification(tab.id);
         }
@@ -542,9 +583,8 @@ fn signature(shared: &Shared) -> String {
     text
 }
 
-fn observe(tab: &Tab, names: &[String], now: Instant) -> bool {
+fn observe(tab: &Tab, programs: &[String], names: &[String], now: Instant) -> bool {
     // A wrapper (e.g. mate, under node) may lead; the agent runs below it.
-    let programs = tab.terminal.running_programs();
     let agent = programs
         .iter()
         .find(|program| agents::is_known(program, names));

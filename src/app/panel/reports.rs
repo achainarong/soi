@@ -137,7 +137,8 @@ fn apply_report(
         agent.usage = Some(usage);
     }
     // Learn the agent's program right away.
-    changed |= observe(&tab, &agent_names(shared), now);
+    let programs = tab.terminal.running_programs();
+    changed |= observe(&tab, &programs, &agent_names(shared), now);
     if changed {
         changed_agent(shared, &tab);
     }

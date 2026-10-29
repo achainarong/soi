@@ -330,11 +330,16 @@ impl TermView {
         let Some(pid) = self.pid() else {
             return Vec::new();
         };
-        let programs = pty::foreground_programs(pid);
-        if programs.is_empty() {
+        self.running_programs_from(pty::foreground_programs(pid))
+    }
+
+    /// `running_programs` from `pty::foreground_programs` of `pid()`, when
+    /// that was asked elsewhere: on a worker thread.
+    pub fn running_programs_from(&self, foreground: Vec<String>) -> Vec<String> {
+        if foreground.is_empty() {
             return self.inner.program.borrow().iter().cloned().collect();
         }
-        programs
+        foreground
     }
 
     /// Says that the terminal runs `program` instead of a shell, so that it
