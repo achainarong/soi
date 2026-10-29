@@ -457,6 +457,7 @@ pub(super) fn create(state: &App, group: Option<Uuid>) {
                                 gtk::AlertDialog::builder().message("Worktree created, but agent could not start")
                                     .detail(error).build().show(Some(&state.window));
                         }
+                        run_worktree_commands(&state, &directory);
                         if !notes.is_empty() {
                             gtk::AlertDialog::builder().message("Worktree created — please check")
                                 .detail(notes.join("\n\n")).build().show(Some(&state.window));
@@ -469,6 +470,51 @@ pub(super) fn create(state: &App, group: Option<Uuid>) {
         });
     });
     dialog.present();
+}
+
+/// Opens a tab in the new worktree for each of the settings' worktree
+/// commands and types the command into its shell. The tab in front (the
+/// agent's, when one started) stays there.
+fn run_worktree_commands(state: &App, directory: &Path) {
+    let commands = state.shared.settings.borrow().worktree_commands.clone();
+    let (Some(workspace), Some(ws)) = (state.active.get(), active_workspace(state)) else {
+        return;
+    };
+    if commands.is_empty() {
+        return;
+    }
+    let front = ws.current_tab().id;
+    for command in commands {
+        let Some(pane) = new_main_tab(state, Some(directory.to_path_buf())) else {
+            return;
+        };
+        let tab = state
+            .panes
+            .borrow()
+            .get(&pane)
+            .and_then(|pane| pane.tabs.borrow().first().cloned());
+        // The shell reads it once it starts.
+        if let Some(tab) = tab {
+            tab.terminal.type_ahead(&format!("{command}\r"));
+        }
+    }
+    select_main_tab_id(state, workspace, front);
+    if let Some(pane) = current_pane(state) {
+        let index = state
+            .panes
+            .borrow()
+            .get(&pane)
+            .map_or(0, |p| p.active.get());
+        activate_tab(state, &pane, index, true);
+    }
+    // Their tabs aren't shown, so they start once the one in front has
+    // its size, as at startup.
+    let weak = Rc::downgrade(&state.shared);
+    glib::timeout_add_local_once(UNSHOWN_START_DELAY, move || {
+        if let Some(shared) = weak.upgrade() {
+            start_unshown_terminals(&shared);
+        }
+    });
 }
 
 fn text_area(content: &gtk::Box, label: &str, height: i32) -> gtk::TextView {

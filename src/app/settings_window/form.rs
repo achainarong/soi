@@ -479,6 +479,12 @@ pub(in crate::app) fn settings_form(state: &App) -> gtk::Widget {
         "Where new terminals (the + button) open. Empty uses your home folder.",
     );
 
+    add_row(
+        "Worktree commands",
+        worktree_commands(state, &current.worktree_commands).upcast_ref(),
+        "Each opens a tab of its own in a new task worktree, e.g. \"nvim .\". It runs in your shell, which stays when it ends. None by default.",
+    );
+
     let path = settings::config_path()
         .and_then(|p| Some(p.parent()?.join("profiles").join(format!("{profile}.conf"))))
         .map(|p| tilde(&p))
@@ -491,4 +497,68 @@ pub(in crate::app) fn settings_form(state: &App) -> gtk::Widget {
         .build();
     grid.attach(&footer, 0, next_row.get(), 2, 1);
     grid.upcast()
+}
+
+/// One entry per command, each with a button that removes it, and one that
+/// adds an entry. Every change saves the non-empty ones, in order.
+fn worktree_commands(state: &App, commands: &[String]) -> gtk::Box {
+    let column = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    let entries = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    let save: Rc<dyn Fn()> = {
+        let (weak, entries) = (Rc::downgrade(state), entries.downgrade());
+        Rc::new(move || {
+            let (Some(state), Some(entries)) = (weak.upgrade(), entries.upgrade()) else {
+                return;
+            };
+            let mut commands = Vec::new();
+            let mut row = entries.first_child();
+            while let Some(current) = row {
+                if let Some(entry) = current.first_child().and_downcast::<gtk::Entry>() {
+                    let command = entry.text().trim().to_string();
+                    if !command.is_empty() {
+                        commands.push(command);
+                    }
+                }
+                row = current.next_sibling();
+            }
+            update_settings(&state, |s| s.worktree_commands = commands);
+        })
+    };
+    let add_entry: Rc<dyn Fn(&str) -> gtk::Entry> = {
+        let (entries, save) = (entries.clone(), save.clone());
+        Rc::new(move |command| {
+            let entry = gtk::Entry::builder()
+                .text(command)
+                .placeholder_text("Command, e.g. nvim .")
+                .hexpand(true)
+                .build();
+            let changed = save.clone();
+            entry.connect_changed(move |_| changed());
+            let remove = gtk::Button::from_icon_name("list-remove-symbolic");
+            remove.set_tooltip_text(Some("Remove this command"));
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            row.append(&entry);
+            row.append(&remove);
+            let (list, save, row_ref) = (entries.downgrade(), save.clone(), row.downgrade());
+            remove.connect_clicked(move |_| {
+                if let (Some(list), Some(row)) = (list.upgrade(), row_ref.upgrade()) {
+                    list.remove(&row);
+                    save();
+                }
+            });
+            entries.append(&row);
+            entry
+        })
+    };
+    for command in commands {
+        add_entry(command);
+    }
+    let add = gtk::Button::with_label("Add command");
+    add.set_halign(gtk::Align::Start);
+    add.connect_clicked(move |_| {
+        add_entry("").grab_focus();
+    });
+    column.append(&entries);
+    column.append(&add);
+    column
 }

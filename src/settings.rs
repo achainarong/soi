@@ -26,6 +26,8 @@ const UI_SCALE: &str = "window-scale";
 const CURSOR_BLINK: &str = "cursor-blink";
 const SHELL_INTEGRATION: &str = "shell-integration";
 const LONG_COMMAND: &str = "long-command-seconds";
+/// Repeated, one line per command.
+const WORKTREE_COMMAND: &str = "worktree-command";
 
 pub const DEFAULT_PROFILE: &str = "Default";
 pub const DEFAULT_SCROLLBACK: u32 = 10_000;
@@ -61,6 +63,9 @@ pub struct Settings {
     /// Commands that ran at least this many seconds say when they end
     /// while you look elsewhere (0: never).
     pub long_command: Option<u32>,
+    /// Commands run in tabs of their own in a new task worktree's root,
+    /// e.g. `nvim .`; each in a shell, which stays when it ends.
+    pub worktree_commands: Vec<String>,
 }
 
 fn config_dir() -> Option<PathBuf> {
@@ -255,6 +260,25 @@ pub fn default_shell() -> String {
     })
 }
 
+/// The `worktree-command` lines, in order. Unlike `key_values`, only one
+/// pair of quotes around the value goes, so the command keeps its own.
+fn worktree_commands(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| line.split_once('='))
+        .filter(|(key, _)| key.trim() == WORKTREE_COMMAND)
+        .map(|(_, value)| {
+            let value = value.trim();
+            value
+                .strip_prefix('"')
+                .and_then(|v| v.strip_suffix('"'))
+                .unwrap_or(value)
+                .trim()
+                .to_string()
+        })
+        .filter(|command| !command.is_empty())
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Settings of one profile
 
@@ -297,11 +321,14 @@ impl Settings {
             cursor_blink: get(CURSOR_BLINK).and_then(|v| v.parse().ok()),
             shell_integration: get(SHELL_INTEGRATION).and_then(|v| v.parse().ok()),
             long_command: get(LONG_COMMAND).and_then(|v| v.parse().ok()),
+            worktree_commands: worktree_commands(text),
         }
     }
 
-    fn values(&self) -> [(&'static str, Option<String>); 13] {
-        [
+    /// Every key with its value; a key repeats for each item of a list, and
+    /// also comes once without one, so an empty list removes its lines.
+    fn values(&self) -> Vec<(&'static str, Option<String>)> {
+        let mut values = vec![
             (THEME, self.theme.clone()),
             (FONT, self.font.clone()),
             (APP_FONT, self.app_font.clone()),
@@ -318,7 +345,15 @@ impl Settings {
                 self.shell_integration.map(|on| on.to_string()),
             ),
             (LONG_COMMAND, self.long_command.map(|s| s.to_string())),
-        ]
+            (WORKTREE_COMMAND, None),
+        ];
+        // Quoted, as the command may itself end in a quote.
+        values.extend(
+            self.worktree_commands
+                .iter()
+                .map(|command| (WORKTREE_COMMAND, Some(format!("\"{command}\"")))),
+        );
+        values
     }
 
     /// See `long_command`; `None` when that's off.
@@ -381,6 +416,7 @@ mod tests {
             background_opacity: Some(0.8),
             shell: Some("fish -l".into()),
             app_font: Some("Inter 12".into()),
+            worktree_commands: vec!["nvim .".into(), r#"echo "ready""#.into()],
             ..Default::default()
         };
         let text = update_lines(
@@ -391,6 +427,15 @@ mod tests {
         assert!(!text.contains("Old 10"), "unset keys are removed");
         assert_eq!(Settings::parse(&text), settings);
         assert_eq!(settings.shell_command(), ["fish", "-l"]);
+        let cleared = Settings {
+            worktree_commands: Vec::new(),
+            ..settings
+        };
+        let text = update_lines(&text, &cleared.values());
+        assert!(
+            !text.contains("worktree-command"),
+            "an empty list leaves no lines"
+        );
     }
 
     /// The only test touching the file system; it points the config
