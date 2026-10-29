@@ -488,6 +488,14 @@ Open **Tasks** in the sidebar toolbar:
   permission prompts, so it needs nothing. Elsewhere
   outside the worktree they still ask. Tasks from before keep their plan where it is
   and get a folder for their history the next time they're saved.
+- **New task in this workspace…** (in a workspace's sidebar menu) makes
+  any workspace a task in its own checkout: no worktree or branch is
+  created, so there is no ⎇ mark and nothing for **Remove worktree…** to
+  delete. It opens Task details for a new task named after the workspace;
+  **Save** attaches it, and from then on the workspace works like a task
+  worktree (plan, brief, agents, history). Agents work in that checkout, so
+  tasks sharing one also share its changes. A workspace that has a task
+  shows **Task details…** there instead.
 - **Task details…** opens one window per workspace with four tabs
   (**Alt+1**–**Alt+4**):
   - **Details**: name, status (Active, Blocked, Ready for review, Finished), ticket number,

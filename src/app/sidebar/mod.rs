@@ -305,6 +305,19 @@ pub(super) fn sidebar_menu(state: &App, item: Option<Item>) -> gio::Menu {
                 Some(&action("ws-to-window", &format!("{id}|new"))),
             );
             specific.append_submenu(Some("Move to"), &window_menu);
+            let has_task = state
+                .workspaces
+                .borrow()
+                .get(&workspace)
+                .is_some_and(|ws| ws.task.borrow().is_some());
+            specific.append(
+                Some(if has_task {
+                    "Task details…"
+                } else {
+                    "New task in this workspace…"
+                }),
+                Some(&action("ws-task", &id)),
+            );
             specific.append(Some("Close workspace"), Some(&action("ws-close", &id)));
             specific.append(Some("Archive"), Some(&action("ws-archive", &id)));
             if worktree_branch(state, workspace).is_some() {

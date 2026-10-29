@@ -21,6 +21,7 @@ checks![
     inline_rename_commits_on_focus_loss_and_group_arrows_still_toggle,
     new_windows_are_saved_immediately,
     tasks_menu_items_show_their_shortcuts,
+    workspace_menu_starts_a_task_in_place,
     closing_a_window_retains_its_context,
     saved_windows_open_in_place,
     starting_again_brings_back_a_saved_window,
@@ -636,6 +637,35 @@ fn new_windows_are_saved_immediately() {
         );
         second.window.close();
         first.window.close();
+    });
+}
+
+fn workspace_menu_starts_a_task_in_place() {
+    isolated("workspace_menu_starts_a_task_in_place", || {
+        let (_app, shared) = application();
+        let state = new_window(&shared, None, true);
+        let id = state.active.get().unwrap();
+        let labels = || {
+            let section = sidebar_menu(&state, Some(Item::Workspace(id)))
+                .item_link(0, "section")
+                .unwrap();
+            (0..section.n_items())
+                .filter_map(|i| section.item_attribute_value(i, "label", None))
+                .filter_map(|v| v.get::<String>())
+                .collect::<Vec<_>>()
+        };
+        assert!(labels().contains(&"New task in this workspace…".to_string()));
+        let ws = active_workspace(&state).unwrap();
+        ws.task.replace(Some(crate::tasks::TaskContext::new(
+            "In place".into(),
+            ws.root_dir.clone(),
+        )));
+        let labels = labels();
+        assert!(labels.contains(&"Task details…".to_string()));
+        // A task without a branch is no worktree, so there is none to remove.
+        assert!(!labels.contains(&"Remove worktree…".to_string()));
+        state.close_confirmed.set(true);
+        state.window.close();
     });
 }
 

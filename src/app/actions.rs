@@ -72,6 +72,14 @@ pub(super) fn install_actions(state: &App) {
             }
         }
     });
+    // Task details on a workspace without a task starts one there, in its
+    // own checkout: no worktree or branch is made.
+    add("ws-task", |s, p| {
+        if let Ok(id) = Uuid::parse_str(p) {
+            select_workspace(s, id);
+            task_view::open(s);
+        }
+    });
     add("ws-remove-worktree", |s, p| {
         if let Ok(id) = Uuid::parse_str(p) {
             tasks::remove_worktree(s, id);

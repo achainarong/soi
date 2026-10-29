@@ -135,7 +135,11 @@ pub(super) fn open(state: &App) {
         .unwrap_or_else(|| TaskContext::new(ws.name.borrow().clone(), ws.root_dir.clone()));
     let window = gtk::Window::builder()
         .transient_for(&state.window)
-        .title("Task details")
+        .title(if ws.task.borrow().is_some() {
+            "Task details"
+        } else {
+            "New task"
+        })
         .default_width(780)
         .default_height(760)
         .build();
@@ -792,6 +796,7 @@ fn store(view: &View, mut task: TaskContext) -> Result<(), String> {
         crate::log::write(&format!("failed to record task history: {e}"));
     }
     view.ws.task.replace(Some(task));
+    view.window.set_title(Some("Task details"));
     save_all(&state.shared);
     panel::refresh(&state.shared);
     rebuild_sidebar(&state);
