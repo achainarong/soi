@@ -88,15 +88,46 @@ impl State {
         }
     }
 
-    /// Order in the panel: what needs you first.
-    pub fn rank(self) -> u8 {
+    /// Order in the panel unless the settings say otherwise: what needs you
+    /// first.
+    pub const DEFAULT_ORDER: [Self; 5] = [
+        Self::Input,
+        Self::Done,
+        Self::Working,
+        Self::Idle,
+        Self::Exited,
+    ];
+
+    /// Name in the `agent-order` setting.
+    pub fn key(self) -> &'static str {
         match self {
-            Self::Input => 0,
-            Self::Done => 1,
-            Self::Working => 2,
-            Self::Idle => 3,
-            Self::Exited => 4,
+            Self::Working => "working",
+            Self::Input => "input",
+            Self::Done => "done",
+            Self::Idle => "idle",
+            Self::Exited => "exited",
         }
+    }
+
+    /// The panel's order from the `agent-order` setting: the states it
+    /// names, then the ones it leaves out in the default order. Unknown
+    /// names and repeats are skipped.
+    pub fn order(setting: Option<&str>) -> Vec<Self> {
+        let mut order: Vec<Self> = Vec::new();
+        let named = setting
+            .unwrap_or_default()
+            .split([',', ' '])
+            .filter_map(|name| {
+                Self::DEFAULT_ORDER
+                    .into_iter()
+                    .find(|s| s.key() == name.trim())
+            });
+        for state in named.chain(Self::DEFAULT_ORDER) {
+            if !order.contains(&state) {
+                order.push(state);
+            }
+        }
+        order
     }
 }
 
@@ -950,20 +981,26 @@ mod tests {
 
     #[test]
     fn what_needs_you_ranks_first() {
-        let mut states = [
-            State::Exited,
-            State::Idle,
-            State::Working,
-            State::Done,
-            State::Input,
-        ];
-        states.sort_by_key(|state| state.rank());
         assert_eq!(
-            states,
+            State::order(None),
             [
                 State::Input,
                 State::Done,
                 State::Working,
+                State::Idle,
+                State::Exited
+            ]
+        );
+    }
+
+    #[test]
+    fn agent_order_setting_fills_in_what_it_leaves_out() {
+        assert_eq!(
+            State::order(Some("working, done,bogus working")),
+            [
+                State::Working,
+                State::Done,
+                State::Input,
                 State::Idle,
                 State::Exited
             ]

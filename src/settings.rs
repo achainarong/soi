@@ -21,6 +21,7 @@ const SHELL: &str = "shell";
 const SCROLLBACK: &str = "scrollback-lines";
 const START_DIR: &str = "start-directory";
 const AGENTS: &str = "agents";
+const AGENT_ORDER: &str = "agent-order";
 const NOTIFY: &str = "desktop-notifications";
 const UI_SCALE: &str = "window-scale";
 const CURSOR_BLINK: &str = "cursor-blink";
@@ -52,6 +53,9 @@ pub struct Settings {
     pub start_dir: Option<String>,
     /// Programs shown as agents, separated by commas or spaces.
     pub agents: Option<String>,
+    /// Agent states in the panel's order, top first, e.g.
+    /// `input, done, working, idle, exited` (see `agents::State::order`).
+    pub agent_order: Option<String>,
     /// Tell the desktop when an agent needs you while soi isn't in front.
     pub desktop_notifications: Option<bool>,
     /// Size of the whole window, text and terminals, e.g. 1.25 for 125%.
@@ -316,6 +320,7 @@ impl Settings {
             scrollback: get(SCROLLBACK).and_then(|v| v.parse().ok()),
             start_dir: get(START_DIR),
             agents: get(AGENTS),
+            agent_order: get(AGENT_ORDER),
             desktop_notifications: get(NOTIFY).and_then(|v| v.parse().ok()),
             ui_scale: get(UI_SCALE).and_then(|v| v.parse().ok()),
             cursor_blink: get(CURSOR_BLINK).and_then(|v| v.parse().ok()),
@@ -337,6 +342,7 @@ impl Settings {
             (SCROLLBACK, self.scrollback.map(|s| s.to_string())),
             (START_DIR, self.start_dir.clone()),
             (AGENTS, self.agents.clone()),
+            (AGENT_ORDER, self.agent_order.clone()),
             (NOTIFY, self.desktop_notifications.map(|on| on.to_string())),
             (UI_SCALE, self.ui_scale.map(|s| format!("{s:.2}"))),
             (CURSOR_BLINK, self.cursor_blink.map(|on| on.to_string())),
@@ -416,6 +422,7 @@ mod tests {
             background_opacity: Some(0.8),
             shell: Some("fish -l".into()),
             app_font: Some("Inter 12".into()),
+            agent_order: Some("working, input".into()),
             worktree_commands: vec!["nvim .".into(), r#"echo "ready""#.into()],
             ..Default::default()
         };

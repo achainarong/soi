@@ -740,11 +740,13 @@ pub(super) fn next_agent(state: &App) {
     }
 }
 
-/// Every agent, what needs you first (see `AgentState::rank`); agents in
-/// the same state keep the sidebars' order.
+/// Every agent, by state in the order the settings give (what needs you
+/// first by default, see `AgentState::order`); agents in the same state
+/// keep the sidebars' order.
 pub(super) fn agents_by_need(shared: &Shared) -> Vec<(Rc<Tab>, Agent)> {
+    let order = AgentState::order(shared.settings.borrow().agent_order.as_deref());
     let mut agents = sorted_agents(shared);
-    agents.sort_by_key(|(_, agent)| agent.state.rank());
+    agents.sort_by_key(|(_, agent)| order.iter().position(|state| *state == agent.state));
     agents
 }
 
@@ -948,7 +950,12 @@ fn most_urgent(state: &App, panes_in: &[gtk::Box]) -> Option<AgentState> {
             let agent = tab.agent.borrow();
             agent.unseen.then_some(agent.state)
         })
-        .min_by_key(|state| state.rank())
+        // By urgency, whatever order the panel lists them in.
+        .min_by_key(|state| {
+            AgentState::DEFAULT_ORDER
+                .iter()
+                .position(|urgent| urgent == state)
+        })
 }
 
 /// The dot for a workspace's sidebar row.

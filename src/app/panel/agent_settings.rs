@@ -85,6 +85,15 @@ pub(in crate::app) fn settings_page(state: &App) -> gtk::Widget {
     ));
 
     page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    page.append(&text("Order in the panel", &["soi-section"]));
+    page.append(&text(
+        "The agents panel and the switcher list agents by state, top first. \
+         Agents in the same state keep the sidebars' order.",
+        &["dim-label", "caption"],
+    ));
+    page.append(&order_section(state));
+
+    page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     page.append(&text("Agents to start", &["soi-section"]));
     page.append(&text(
         "What Start with brief and New task worktree offer. Add a tool more than once \
@@ -162,6 +171,75 @@ pub(in crate::app) fn settings_page(state: &App) -> gtk::Widget {
         &["dim-label", "caption"],
     ));
     page.upcast()
+}
+
+/// One row per agent state, with buttons moving it up and down, and Reset.
+fn order_section(state: &App) -> gtk::Widget {
+    let rows = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    fill_order(&rows, state);
+    let reset = gtk::Button::with_label("Reset");
+    reset.set_halign(gtk::Align::Start);
+    reset.set_tooltip_text(Some("What needs you first"));
+    let (weak, rows_ref) = (Rc::downgrade(state), rows.downgrade());
+    reset.connect_clicked(move |_| {
+        let (Some(state), Some(rows)) = (weak.upgrade(), rows_ref.upgrade()) else {
+            return;
+        };
+        update_settings(&state, |s| s.agent_order = None);
+        fill_order(&rows, &state);
+    });
+    let column = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    column.append(&rows);
+    column.append(&reset);
+    column.upcast()
+}
+
+/// The states in the order the settings give; every move saves the whole
+/// order and fills the rows again.
+fn fill_order(rows: &gtk::Box, state: &App) {
+    while let Some(row) = rows.first_child() {
+        rows.remove(&row);
+    }
+    let order = AgentState::order(state.shared.settings.borrow().agent_order.as_deref());
+    for (index, agent_state) in order.iter().enumerate() {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        row.append(
+            &gtk::Label::builder()
+                .label(agent_state.label())
+                .xalign(0.0)
+                .hexpand(true)
+                .css_classes([agent_state.class()])
+                .build(),
+        );
+        let moves = [
+            ("go-up-symbolic", "Move up", index.checked_sub(1)),
+            (
+                "go-down-symbolic",
+                "Move down",
+                Some(index + 1).filter(|&below| below < order.len()),
+            ),
+        ];
+        for (icon, tooltip, target) in moves {
+            let button = gtk::Button::from_icon_name(icon);
+            button.set_tooltip_text(Some(tooltip));
+            button.set_sensitive(target.is_some());
+            let mut moved = order.clone();
+            if let Some(target) = target {
+                moved.swap(index, target);
+            }
+            let (weak, rows_ref) = (Rc::downgrade(state), rows.downgrade());
+            button.connect_clicked(move |_| {
+                let (Some(state), Some(rows)) = (weak.upgrade(), rows_ref.upgrade()) else {
+                    return;
+                };
+                let value = moved.iter().map(|s| s.key()).collect::<Vec<_>>().join(", ");
+                update_settings(&state, |s| s.agent_order = Some(value));
+                fill_order(&rows, &state);
+            });
+            row.append(&button);
+        }
+        rows.append(&row);
+    }
 }
 
 pub(super) struct Integration {
