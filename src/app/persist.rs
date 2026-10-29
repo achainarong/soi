@@ -65,17 +65,70 @@ pub(super) fn save_output(shared: &Shared, windows: &[App]) {
     for state in windows {
         for pane in state.panes.borrow().values() {
             for tab in pane.tabs.borrow().iter() {
-                let serial = tab.terminal.output_serial();
-                if serial == tab.saved_output.get() || tab.untouched.get() {
-                    continue;
-                }
-                match session::scrollback::save(tab.id, &tab.terminal.export(SAVED_LINES)) {
-                    Ok(()) => tab.saved_output.set(serial),
-                    Err(err) => crate::log::write(&format!("failed to save output: {err}")),
-                }
+                save_tab_output(tab);
             }
         }
     }
+    prune_output(shared);
+}
+
+/// `save_output` for every window, a terminal per turn of the main loop:
+/// each takes milliseconds, and all at once would hold up typing.
+pub(super) fn save_output_gradually(shared: &Rc<Shared>) {
+    let mut tabs = shared
+        .windows()
+        .iter()
+        .flat_map(|state| {
+            let panes = state.panes.borrow();
+            panes
+                .values()
+                .flat_map(|pane| {
+                    pane.tabs
+                        .borrow()
+                        .iter()
+                        .map(Rc::downgrade)
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>()
+        .into_iter();
+    let weak = Rc::downgrade(shared);
+    glib::idle_add_local(move || {
+        let Some(shared) = weak.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
+        match tabs.next() {
+            Some(tab) => {
+                if let Some(tab) = tab.upgrade() {
+                    let started = std::time::Instant::now();
+                    save_tab_output(&tab);
+                    crate::log::if_slow("output save", started);
+                }
+                glib::ControlFlow::Continue
+            }
+            None => {
+                prune_output(&shared);
+                glib::ControlFlow::Break
+            }
+        }
+    });
+}
+
+/// Saves a terminal's output if it printed something since the last time.
+fn save_tab_output(tab: &Tab) {
+    let serial = tab.terminal.output_serial();
+    if serial == tab.saved_output.get() || tab.untouched.get() {
+        return;
+    }
+    match session::scrollback::save(tab.id, &tab.terminal.export(SAVED_LINES)) {
+        Ok(()) => tab.saved_output.set(serial),
+        Err(err) => crate::log::write(&format!("failed to save output: {err}")),
+    }
+}
+
+/// Deletes saved output of tabs that are gone.
+fn prune_output(shared: &Shared) {
     // What's in a window now or in a saved context (closed windows).
     let mut keep = shared.session.borrow().tab_ids();
     for state in shared.windows() {
