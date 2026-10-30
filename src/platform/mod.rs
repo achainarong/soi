@@ -57,6 +57,15 @@ pub trait Platform: Sync {
         false
     }
 
+    /// The host's deliberate gesture for opening terminal links.
+    fn link_gesture(&self) -> LinkGesture {
+        if self.cmd_shortcuts() {
+            LinkGesture::Command
+        } else {
+            LinkGesture::Control
+        }
+    }
+
     /// Whether $SHELL starts as a login shell, as terminals do on a Mac:
     /// apps started from the Dock or Finder get only the system's PATH,
     /// and `~/.zprofile` (Homebrew, …) adds the rest.
@@ -101,6 +110,38 @@ pub enum Snap {
     Right,
     Top,
     Bottom,
+}
+
+/// A terminal link's activation predicate and the guidance shown beside it.
+/// This is action-specific: terminal keyboard input keeps its own modifiers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkGesture {
+    Command,
+    Control,
+}
+
+impl LinkGesture {
+    pub fn matches(self, button: u32, state: gtk::gdk::ModifierType) -> bool {
+        use gtk::gdk::ModifierType as M;
+        let keyboard = M::SHIFT_MASK
+            | M::CONTROL_MASK
+            | M::ALT_MASK
+            | M::SUPER_MASK
+            | M::HYPER_MASK
+            | M::META_MASK;
+        let required = match self {
+            Self::Command => M::META_MASK,
+            Self::Control => M::CONTROL_MASK,
+        };
+        button == 1 && state & keyboard == required
+    }
+
+    pub fn hint(self) -> &'static str {
+        match self {
+            Self::Command => "Command+click to open",
+            Self::Control => "Ctrl+click to open",
+        }
+    }
 }
 
 /// The platform soi was built for.
@@ -151,4 +192,91 @@ pub fn set_gtk_env() {
 /// get instead: the value from before, or none.
 pub fn gtk_only_env() -> &'static [(String, Option<OsString>)] {
     GTK_ONLY_ENV.get().map_or(&[], Vec::as_slice)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gtk::gdk::ModifierType as M;
+
+    #[test]
+    fn link_gestures_require_exact_keyboard_modifiers_and_left_button() {
+        let modifiers = [
+            M::SHIFT_MASK,
+            M::CONTROL_MASK,
+            M::ALT_MASK,
+            M::SUPER_MASK,
+            M::HYPER_MASK,
+            M::META_MASK,
+        ];
+        for (gesture, required) in [
+            (LinkGesture::Command, M::META_MASK),
+            (LinkGesture::Control, M::CONTROL_MASK),
+        ] {
+            for bits in 0..(1 << modifiers.len()) {
+                let state = modifiers
+                    .iter()
+                    .enumerate()
+                    .fold(M::empty(), |state, (i, m)| {
+                        if bits & (1 << i) != 0 {
+                            state | *m
+                        } else {
+                            state
+                        }
+                    });
+                for button in 0..=5 {
+                    assert_eq!(
+                        gesture.matches(button, state),
+                        button == 1 && state == required,
+                        "{gesture:?}, button {button}, {state:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn link_gestures_ignore_lock_and_button_state_flags() {
+        let incidental = [
+            M::LOCK_MASK,
+            M::BUTTON1_MASK,
+            M::BUTTON2_MASK,
+            M::BUTTON3_MASK,
+            M::BUTTON4_MASK,
+            M::BUTTON5_MASK,
+        ];
+        for (gesture, required) in [
+            (LinkGesture::Command, M::META_MASK),
+            (LinkGesture::Control, M::CONTROL_MASK),
+        ] {
+            for bits in 0..(1 << incidental.len()) {
+                let state = incidental
+                    .iter()
+                    .enumerate()
+                    .fold(required, |state, (i, m)| {
+                        if bits & (1 << i) != 0 {
+                            state | *m
+                        } else {
+                            state
+                        }
+                    });
+                assert!(gesture.matches(1, state), "{gesture:?}, {state:?}");
+                assert!(!gesture.matches(1, state | M::SHIFT_MASK));
+            }
+        }
+    }
+
+    #[test]
+    fn link_hints_agree_with_policy() {
+        assert_eq!(LinkGesture::Command.hint(), "Command+click to open");
+        assert_eq!(LinkGesture::Control.hint(), "Ctrl+click to open");
+        assert_eq!(
+            current().link_gesture(),
+            if current().cmd_shortcuts() {
+                LinkGesture::Command
+            } else {
+                LinkGesture::Control
+            }
+        );
+    }
 }

@@ -43,13 +43,15 @@ pub(in crate::app) fn add_command_tab(
         home_dir()
     };
     let shell = command.is_none();
-    let (command, scrollback, blink, integration) = {
+    let (command, scrollback, scroll_speed, blink, integration, image_paste_bridge) = {
         let settings = state.shared.settings.borrow();
         (
             command.unwrap_or_else(|| settings.shell_command()),
             settings.scrollback_lines(),
+            settings.scroll_speed(),
             settings.cursor_blink(),
             settings.shell_integration(),
+            settings.image_paste_bridge(),
         )
     };
     let id = id.unwrap_or_else(Uuid::new_v4);
@@ -76,6 +78,8 @@ pub(in crate::app) fn add_command_tab(
         scrollback as usize,
     );
     terminal.set_cursor_blink(blink);
+    terminal.set_scroll_speed(scroll_speed);
+    terminal.set_image_paste_bridge(image_paste_bridge);
     if let Some(program) = &program {
         terminal.set_program(program);
     }

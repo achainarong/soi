@@ -21,6 +21,10 @@ checks![
     inline_rename_commits_on_focus_loss_and_group_arrows_still_toggle,
     new_windows_are_saved_immediately,
     tasks_menu_items_show_their_shortcuts,
+    image_paste_setting_updates_existing_and_new_terminals,
+    image_paste_dispatch_is_local_and_preserves_text,
+    clipboard_shortcuts_respect_editable_focus_and_overrides,
+    terminal_link_pointer_ownership_and_targets,
     workspace_menu_starts_a_task_in_place,
     closing_a_window_retains_its_context,
     saved_windows_open_in_place,
@@ -667,6 +671,329 @@ fn workspace_menu_starts_a_task_in_place() {
         state.close_confirmed.set(true);
         state.window.close();
     });
+}
+
+fn image_paste_setting_updates_existing_and_new_terminals() {
+    isolated(
+        "image_paste_setting_updates_existing_and_new_terminals",
+        || {
+            let (_app, shared) = application();
+            let state = new_window(&shared, None, true);
+            let first = current_terminal(&state).unwrap();
+            assert!(first.image_paste_bridge());
+            let page = terminal_page(&state);
+            let check = panel::find_descendant(&page, &|w| {
+                w.downcast_ref::<gtk::CheckButton>().is_some_and(|c| {
+                    c.label().as_deref() == Some("Delegate image paste to terminal apps")
+                })
+            })
+            .unwrap()
+            .downcast::<gtk::CheckButton>()
+            .unwrap();
+            assert!(check.is_active());
+            check.set_active(false);
+            assert!(!first.image_paste_bridge());
+            assert!(!Settings::load_profile(&shared.profile.borrow()).image_paste_bridge());
+            check.set_active(true);
+            assert!(first.image_paste_bridge());
+            assert!(Settings::load_profile(&shared.profile.borrow()).image_paste_bridge());
+            new_terminal_workspace(&state, None);
+            let second = current_terminal(&state).unwrap();
+            assert!(second.image_paste_bridge());
+            let disabled = Settings {
+                image_paste_bridge: Some(false),
+                ..Default::default()
+            };
+            disabled.save_profile("No bridge").unwrap();
+            switch_profile(&state, "No bridge");
+            assert!(!first.image_paste_bridge());
+            assert!(!second.image_paste_bridge());
+            new_terminal_workspace(&state, None);
+            let opted_out = current_terminal(&state).unwrap();
+            assert!(!opted_out.image_paste_bridge());
+            switch_profile(&state, settings::DEFAULT_PROFILE);
+            assert!(first.image_paste_bridge());
+            assert!(second.image_paste_bridge());
+            assert!(opted_out.image_paste_bridge());
+            check.set_active(false);
+            assert!(!first.image_paste_bridge());
+            assert!(!second.image_paste_bridge());
+            state.close_confirmed.set(true);
+            state.window.close();
+        },
+    );
+}
+
+fn terminal_link_pointer_ownership_and_targets() {
+    isolated("terminal_link_pointer_ownership_and_targets", || {
+        let (_app, shared) = application();
+        let state = new_window(&shared, None, true);
+        let terminal = current_terminal(&state).unwrap();
+        wait_until(|| terminal.pid().is_some());
+        terminal.check_link_gestures_for_test();
+        terminal.widget().clipboard().set_text("");
+        state.close_confirmed.set(true);
+        state.window.close();
+    });
+}
+
+fn flush_clipboard_reads(clipboard: &gdk::Clipboard) {
+    let finished = Rc::new(Cell::new(false));
+    let flag = finished.clone();
+    clipboard.read_text_async(gio::Cancellable::NONE, move |_| flag.set(true));
+    wait_until(|| finished.get());
+}
+
+fn image_paste_dispatch_is_local_and_preserves_text() {
+    isolated("image_paste_dispatch_is_local_and_preserves_text", || {
+        let (_app, shared) = application();
+        shared.settings.borrow_mut().image_paste_bridge = Some(true);
+        let state = new_window(&shared, None, true);
+        let first = current_terminal(&state).unwrap();
+        split_pane(
+            &state,
+            &current_pane(&state).unwrap(),
+            gtk::Orientation::Horizontal,
+        );
+        let terminal = current_terminal(&state).unwrap();
+        wait_until(|| terminal.pid().is_some() && first.pid().is_some());
+        terminal.widget().grab_focus();
+        assert!(terminal.has_terminal_focus());
+        let sent = terminal.capture_input_for_test();
+        let peer = first.capture_input_for_test();
+        toggle_broadcast(&state);
+        let clipboard = terminal.widget().clipboard();
+        let image =
+            gdk::ContentProvider::for_bytes("image/png", &glib::Bytes::from_static(b"not decoded"));
+        let text = gdk::ContentProvider::for_value(&"fallback".to_value());
+        for provider in [
+            image.clone(),
+            gdk::ContentProvider::new_union(&[image.clone(), text.clone()]),
+        ] {
+            clipboard.set_content(Some(&provider)).unwrap();
+            run_action(&state, "paste");
+            flush_clipboard_reads(&clipboard);
+            assert_eq!(&*sent.borrow(), &[0x16], "one key, no accompanying text");
+            assert!(
+                peer.borrow().is_empty(),
+                "image delegation must not broadcast"
+            );
+            sent.borrow_mut().clear();
+        }
+        terminal.set_image_paste_bridge(false);
+        clipboard.set_content(Some(&image)).unwrap();
+        run_action(&state, "paste");
+        flush_clipboard_reads(&clipboard);
+        assert!(
+            sent.borrow().is_empty(),
+            "image-only paste remains text-only when explicitly disabled"
+        );
+        clipboard
+            .set_content(Some(&gdk::ContentProvider::new_union(&[
+                image.clone(),
+                text,
+            ])))
+            .unwrap();
+        run_action(&state, "paste");
+        wait_until(|| !sent.borrow().is_empty());
+        assert_eq!(&*sent.borrow(), b"fallback");
+        sent.borrow_mut().clear();
+        peer.borrow_mut().clear();
+        toggle_broadcast(&state);
+        terminal.set_image_paste_bridge(true);
+        for provider in [
+            gdk::ContentProvider::for_bytes(
+                "application/octet-stream",
+                &glib::Bytes::from_static(b"unsupported"),
+            ),
+            gdk::ContentProvider::for_value(&"".to_value()),
+        ] {
+            clipboard.set_content(Some(&provider)).unwrap();
+            run_action(&state, "paste");
+            flush_clipboard_reads(&clipboard);
+            assert!(sent.borrow().is_empty());
+        }
+        terminal.restore("\x1b[?2004h");
+        clipboard.set_text("safe\x1b[201~\ntext");
+        run_action(&state, "paste");
+        wait_until(|| !sent.borrow().is_empty());
+        assert_eq!(&*sent.borrow(), b"\x1b[200~safe[201~\rtext\x1b[201~");
+        // Direct terminal Ctrl+V is not reinterpreted by the clipboard bridge.
+        sent.borrow_mut().clear();
+        terminal.type_input(&Input::Key {
+            key: gdk::Key::v,
+            state: gdk::ModifierType::CONTROL_MASK,
+            base: Some('v'),
+        });
+        assert_eq!(&*sent.borrow(), &[0x16]);
+        clipboard.set_text("");
+        flush_clipboard_reads(&clipboard);
+        state.close_confirmed.set(true);
+        state.window.close();
+    });
+}
+
+/// Activate the real installed callback; this tests focus routing without
+/// pretending a synthetic GObject signal verifies native key event mapping.
+fn shortcut_for(state: &App, accel: &str) -> Option<gtk::Shortcut> {
+    let (key, mods) = parse_accel(accel)?;
+    let controller = state.shortcuts.borrow().clone()?;
+    (0..controller.n_items())
+        .filter_map(|i| controller.item(i))
+        .filter_map(|item| item.downcast::<gtk::Shortcut>().ok())
+        .find(|shortcut| {
+            shortcut
+                .trigger()
+                .and_downcast::<gtk::KeyvalTrigger>()
+                .is_some_and(|trigger| trigger.keyval() == key && trigger.modifiers() == mods)
+        })
+}
+
+fn clipboard_shortcuts_respect_editable_focus_and_overrides() {
+    isolated(
+        "clipboard_shortcuts_respect_editable_focus_and_overrides",
+        || {
+            let (_app, shared) = application();
+            shared.settings.borrow_mut().image_paste_bridge = Some(true);
+            let state = new_window(&shared, None, true);
+            wait_until(|| state.window.is_mapped());
+            let terminal = current_terminal(&state).unwrap();
+            let sent = terminal.capture_input_for_test();
+            let clipboard = terminal.widget().clipboard();
+            let paste_default = keybindings::binding("paste").unwrap().default_accel();
+            let activate = |shortcut: &gtk::Shortcut| {
+                shortcut.action().unwrap().activate(
+                    gtk::ShortcutActionFlags::empty(),
+                    &state.window,
+                    None,
+                )
+            };
+            let workspace = state.active.get().unwrap();
+            rename_workspace(&state, workspace);
+            let editor =
+                row_name_editor(&find_row(&state, &workspace.to_string()).unwrap()).unwrap();
+            wait_until(|| editor.is_editing());
+            for id in ["copy", "cut", "paste"] {
+                let shortcut =
+                    shortcut_for(&state, keybindings::binding(id).unwrap().default_accel())
+                        .unwrap();
+                assert!(
+                    !activate(&shortcut),
+                    "{id} must proceed to the rename widget"
+                );
+            }
+            assert!(sent.borrow().is_empty());
+            finish_inline_renames(&state, false);
+
+            switcher::open(&state);
+            let search =
+                panel::find_descendant(state.stack.upcast_ref(), &|w| w.is::<gtk::SearchEntry>())
+                    .unwrap();
+            search.grab_focus();
+            assert!(!activate(&shortcut_for(&state, paste_default).unwrap()));
+            search
+                .ancestor(gtk::Popover::static_type())
+                .unwrap()
+                .downcast::<gtk::Popover>()
+                .unwrap()
+                .popdown();
+
+            open_settings(&state);
+            let settings_window = shared.settings_window.upgrade().unwrap();
+            wait_until(|| settings_window.is_mapped());
+            let settings_stack = shared.settings_stack.upgrade().unwrap();
+            settings_stack.set_visible_child_name("terminal");
+            let settings_entry =
+                panel::find_descendant(&settings_stack.visible_child().unwrap(), &|w| {
+                    w.is::<gtk::Entry>()
+                })
+                .unwrap();
+            wait_until(|| settings_entry.is_mapped());
+            assert!(settings_entry.grab_focus());
+            assert!(
+                !shortcut_for(&state, paste_default)
+                    .unwrap()
+                    .action()
+                    .unwrap()
+                    .activate(gtk::ShortcutActionFlags::empty(), &settings_window, None)
+            );
+            settings_window.close();
+
+            // Settings entries and editable text views use the same focused-widget guard.
+            let field_window = gtk::Window::new();
+            let fields = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            let entry = gtk::Entry::new();
+            let text = gtk::TextView::new();
+            fields.append(&entry);
+            fields.append(&text);
+            field_window.set_child(Some(&fields));
+            field_window.present();
+            wait_until(|| field_window.is_mapped());
+            for field in [
+                entry.upcast_ref::<gtk::Widget>(),
+                text.upcast_ref::<gtk::Widget>(),
+            ] {
+                field.grab_focus();
+                for id in ["copy", "cut", "paste"] {
+                    let shortcut =
+                        shortcut_for(&state, keybindings::binding(id).unwrap().default_accel())
+                            .unwrap();
+                    assert!(!shortcut.action().unwrap().activate(
+                        gtk::ShortcutActionFlags::empty(),
+                        &field_window,
+                        None
+                    ));
+                }
+            }
+            // Direct background action dispatch cannot target the active terminal.
+            entry.grab_focus();
+            terminal
+                .widget()
+                .root()
+                .unwrap()
+                .set_focus(Some(&state.sidebar));
+            run_action(&state, "paste");
+            assert!(sent.borrow().is_empty());
+            field_window.close();
+
+            terminal.widget().grab_focus();
+            clipboard.set_text("must be discarded");
+            terminal.paste_clipboard();
+            rename_workspace(&state, workspace);
+            flush_clipboard_reads(&clipboard);
+            assert!(
+                sent.borrow().is_empty(),
+                "pending clipboard read lost its terminal focus"
+            );
+            finish_inline_renames(&state, false);
+            terminal.widget().grab_focus();
+
+            let image = gdk::ContentProvider::for_bytes(
+                "image/png",
+                &glib::Bytes::from_static(b"unread image"),
+            );
+            clipboard.set_content(Some(&image)).unwrap();
+            shared.keybindings.borrow_mut().set("paste", "<Alt>v");
+            reload_shortcuts(&shared);
+            assert!(shortcut_for(&state, paste_default).is_none());
+            let custom = shortcut_for(&state, "<Alt>v").unwrap();
+            assert!(activate(&custom));
+            assert_eq!(&*sent.borrow(), &[0x16]);
+            assert!(shortcut_hint(&shared, "Paste", "paste").contains(&accel_label("<Alt>v")));
+            shared.keybindings.borrow_mut().set("paste", "");
+            reload_shortcuts(&shared);
+            assert!(shortcut_for(&state, "<Alt>v").is_none());
+            assert!(shortcut_for(&state, paste_default).is_none());
+            shared.keybindings.borrow_mut().reset_all();
+            reload_shortcuts(&shared);
+            assert!(shortcut_for(&state, paste_default).is_some());
+            assert!(shared.settings.borrow().image_paste_bridge());
+            clipboard.set_text("");
+            flush_clipboard_reads(&clipboard);
+            state.close_confirmed.set(true);
+            state.window.close();
+        },
+    );
 }
 
 fn tasks_menu_items_show_their_shortcuts() {

@@ -2,7 +2,8 @@
 //! link may be opened.
 //!
 //! Output is untrusted (a file you `cat`, a server you `ssh` into), so links
-//! only open on Ctrl+click, the real target is shown before that, and only
+//! require deliberate activation (Cmd+click on macOS, Ctrl+click on Linux,
+//! or browse mode's open-link action), the real target is shown first, and only
 //! harmless kinds of targets are opened: web and mail links, and local
 //! folders and non-executable files.
 

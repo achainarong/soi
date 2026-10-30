@@ -91,7 +91,7 @@ Other ways to install are under [Install](#install).
   graphics protocol, e.g. fastfetch logos, and Sixel, e.g. img2sixel or
   chafa) and **copying from programs**
   (OSC 52: Neovim, tmux, also over SSH; programs can't read the clipboard).
-- **Clickable links** (Ctrl+click), with the real target shown first.
+- **Clickable links** (Cmd+click on macOS, Ctrl+click on Linux), with the real target shown first.
 - **Browse mode**: move through the output with vim keys, search, select and
   copy, jump between commands.
 - **Knows your commands** when the shell marks them (OSC 133): fish does on
@@ -259,6 +259,10 @@ Cmd instead, with these common bindings:
 | `Cmd+,` / `Cmd+Q` | Settings / quit |
 
 `F2` renames on both platforms. On macOS, use Cmd+click to open terminal links.
+On Linux use Ctrl+click. Only the exact modifier with the left button activates
+a link; extra keyboard modifiers do not. macOS Control-click is not a link
+alias and follows the existing non-link pointer path; no context menu is added.
+Soi uses the host platform even when the terminal runs a Linux container or SSH.
 
 If Rectangle or a similar tool uses Ctrl+Option+Arrows too, it takes them
 first and can't move soi's windows; add soi to its ignored apps (Rectangle:
@@ -309,8 +313,46 @@ remain attached to the workspace.
 **Session format change:** workspace-level tabs start a new session format;
 old pane-tab sessions are not migrated. Settings and custom shortcuts remain.
 
+### Clipboard and image paste
+
+Terminal copy/paste uses `Cmd+C` / `Cmd+V` on macOS and
+`Ctrl+Shift+C` / `Ctrl+Shift+V` on Linux. Editable GUI fields (rename,
+search, Settings, and text editors) keep their native clipboard shortcuts:
+`Cmd+C/X/V` on macOS, `Ctrl+C/X/V` on Linux. A terminal clipboard action
+does not target a background terminal while you edit a field. Shell control
+keys remain terminal input unless you explicitly bind them to a Soi action.
+
+**Settings ▸ Terminal ▸ Delegate image paste to terminal apps** enables the
+profile setting `image-paste-bridge = true`. It is **on by default** on macOS
+and Linux. Set `image-paste-bridge = false` or turn off the checkbox to disable
+it; existing explicit false settings remain disabled after upgrades.
+When enabled and the standard clipboard offers an image, the effective Paste
+shortcut sends one Ctrl+V key action to the focused terminal application.
+This lets compatible applications use their own image-clipboard support;
+it is not an image transfer protocol. The key goes only to the focused
+terminal, even when broadcast input is enabled.
+
+An image offer takes precedence over accompanying text when enabled. Text-only
+paste keeps sanitization, bracketed paste, and multiline confirmation. With the
+bridge off, paste remains text-only. Custom or disabled Paste bindings apply to
+the bridge too; restoring shortcut defaults does not enable this setting.
+Linux primary selection and middle-click paste are not routed through it.
+
+**Compatibility:** in a shell Ctrl+V may quote the next key rather than attach
+an image. Disable the bridge in profiles used for shells or applications where
+Ctrl+V does not paste images.
+An SSH/container application still needs its own access to the host clipboard;
+Soi does not extract images, create files, run helpers, or transport images
+remotely. Clipboard contents can change before the application reads them.
+Selecting terminal text currently copies it to the standard clipboard and can
+replace a previously copied screenshot. Compatibility must be checked for each
+OpenCode, Claude Code, or Pi version; no universal support is implied.
+
 In the terminal: double-click selects a word, triple-click a line,
-Ctrl+click opens a link, Shift+PgUp/PgDn scrolls.
+Cmd+click (macOS) or Ctrl+click (Linux) opens a link, Shift+PgUp/PgDn scrolls.
+Link gestures consume their own drag/release events rather than forwarding
+an unmatched mouse release to the foreground program. Shift still overrides
+application mouse reporting for terminal selection.
 
 ## Agents
 
@@ -689,6 +731,7 @@ tell (e.g. to pick a fastfetch logo type).
 
 Terminal output is treated as untrusted: image files are only read if they
 are regular image files outside `/proc`, `/sys`, `/dev` and `/run`, memory
-for images is bounded, links only open on Ctrl+click and only for web,
+for images is bounded, links require an explicit action (Cmd+click on macOS,
+Ctrl+click on Linux, or browse mode's open-link command) and only open web,
 mail and local non-executable files, and the engine is fuzz-tested
 (`cargo test --release fuzz_long -- --ignored`).

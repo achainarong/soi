@@ -441,6 +441,27 @@ pub(in crate::app) fn terminal_page(state: &App) -> gtk::Widget {
         "Starts them with a small script that loads your configuration, then marks prompts and commands (fish does on its own). For failed-command marks, copying the last output and notices when long commands end. New tabs only.",
     );
 
+    let image_paste = gtk::CheckButton::builder()
+        .label("Delegate image paste to terminal apps")
+        .active(current.image_paste_bridge())
+        .build();
+    let weak = Rc::downgrade(state);
+    image_paste.connect_toggled(move |check| {
+        if let Some(state) = weak.upgrade() {
+            update_settings(&state, |s| s.image_paste_bridge = Some(check.is_active()));
+        }
+    });
+    add_row(
+        "Image paste",
+        image_paste.upcast_ref(),
+        &format!(
+            "{} sends Ctrl+V when the clipboard offers an image. Requires the app's \
+             clipboard support. On by default; turn off for shells where Ctrl+V quotes the next key. \
+             Only the focused terminal receives it, even when broadcasting.",
+            shortcut_hint(&state.shared, "Paste", "paste")
+        ),
+    );
+
     // Scrollback
     let scrollback = gtk::SpinButton::with_range(0.0, 1_000_000.0, 1_000.0);
     scrollback.set_value(current.scrollback_lines() as f64);
@@ -454,6 +475,23 @@ pub(in crate::app) fn terminal_page(state: &App) -> gtk::Widget {
         "Scrollback lines",
         scrollback.upcast_ref(),
         &format!("Default {}.", settings::DEFAULT_SCROLLBACK),
+    );
+
+    // Scroll speed
+    let scroll_speed =
+        gtk::SpinButton::with_range(settings::MIN_SCROLL_SPEED, settings::MAX_SCROLL_SPEED, 0.1);
+    scroll_speed.set_digits(1);
+    scroll_speed.set_value(current.scroll_speed());
+    let weak = Rc::downgrade(state);
+    scroll_speed.connect_value_changed(move |spin| {
+        if let Some(state) = weak.upgrade() {
+            update_settings(&state, |s| s.scroll_speed = Some(spin.value()));
+        }
+    });
+    add_row(
+        "Scroll speed",
+        scroll_speed.upcast_ref(),
+        "Wheel and trackpad speed, including in terminal apps. Lower is slower. Default 1.0; 3.0 restores the old speed. Applies immediately.",
     );
 
     // Start directory

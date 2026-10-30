@@ -19,6 +19,8 @@ const APP_FONT: &str = "app-font";
 const OPACITY: &str = "background-opacity";
 const SHELL: &str = "shell";
 const SCROLLBACK: &str = "scrollback-lines";
+const SCROLL_SPEED: &str = "scroll-speed";
+const IMAGE_PASTE_BRIDGE: &str = "image-paste-bridge";
 const START_DIR: &str = "start-directory";
 const AGENTS: &str = "agents";
 const AGENT_ORDER: &str = "agent-order";
@@ -32,6 +34,9 @@ const WORKTREE_COMMAND: &str = "worktree-command";
 
 pub const DEFAULT_PROFILE: &str = "Default";
 pub const DEFAULT_SCROLLBACK: u32 = 10_000;
+pub const DEFAULT_SCROLL_SPEED: f64 = 1.0;
+pub const MIN_SCROLL_SPEED: f64 = 0.1;
+pub const MAX_SCROLL_SPEED: f64 = 10.0;
 pub const DEFAULT_LONG_COMMAND: u32 = 10;
 pub const MIN_UI_SCALE: f64 = 0.75;
 pub const MAX_UI_SCALE: f64 = 1.5;
@@ -49,6 +54,10 @@ pub struct Settings {
     /// Command for new terminals, split on whitespace.
     pub shell: Option<String>,
     pub scrollback: Option<u32>,
+    /// Multiplier for wheel and trackpad scrolling, including terminal apps.
+    pub scroll_speed: Option<f64>,
+    /// Delegate image paste to the terminal app as Ctrl+V; enabled unless opted out.
+    pub image_paste_bridge: Option<bool>,
     /// Where new workspaces open; `~` is expanded.
     pub start_dir: Option<String>,
     /// Programs shown as agents, separated by commas or spaces.
@@ -318,6 +327,8 @@ impl Settings {
             background_opacity: get(OPACITY).and_then(|v| v.parse().ok()),
             shell: get(SHELL),
             scrollback: get(SCROLLBACK).and_then(|v| v.parse().ok()),
+            scroll_speed: get(SCROLL_SPEED).and_then(|v| v.parse().ok()),
+            image_paste_bridge: get(IMAGE_PASTE_BRIDGE).and_then(|v| v.parse().ok()),
             start_dir: get(START_DIR),
             agents: get(AGENTS),
             agent_order: get(AGENT_ORDER),
@@ -340,6 +351,11 @@ impl Settings {
             (OPACITY, self.background_opacity.map(|o| format!("{o:.2}"))),
             (SHELL, self.shell.clone()),
             (SCROLLBACK, self.scrollback.map(|s| s.to_string())),
+            (SCROLL_SPEED, self.scroll_speed.map(|s| s.to_string())),
+            (
+                IMAGE_PASTE_BRIDGE,
+                self.image_paste_bridge.map(|on| on.to_string()),
+            ),
             (START_DIR, self.start_dir.clone()),
             (AGENTS, self.agents.clone()),
             (AGENT_ORDER, self.agent_order.clone()),
@@ -378,6 +394,10 @@ impl Settings {
         self.cursor_blink.unwrap_or(false)
     }
 
+    pub fn image_paste_bridge(&self) -> bool {
+        self.image_paste_bridge.unwrap_or(true)
+    }
+
     pub fn desktop_notifications(&self) -> bool {
         self.desktop_notifications.unwrap_or(true)
     }
@@ -409,6 +429,13 @@ impl Settings {
     pub fn scrollback_lines(&self) -> u32 {
         self.scrollback.unwrap_or(DEFAULT_SCROLLBACK)
     }
+
+    pub fn scroll_speed(&self) -> f64 {
+        self.scroll_speed
+            .filter(|speed| speed.is_finite() && *speed > 0.0)
+            .unwrap_or(DEFAULT_SCROLL_SPEED)
+            .clamp(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED)
+    }
 }
 
 #[cfg(test)]
@@ -422,6 +449,7 @@ mod tests {
             background_opacity: Some(0.8),
             shell: Some("fish -l".into()),
             app_font: Some("Inter 12".into()),
+            scroll_speed: Some(0.5),
             agent_order: Some("working, input".into()),
             worktree_commands: vec!["nvim .".into(), r#"echo "ready""#.into()],
             ..Default::default()
@@ -443,6 +471,51 @@ mod tests {
             !text.contains("worktree-command"),
             "an empty list leaves no lines"
         );
+    }
+
+    #[test]
+    fn scroll_speed_defaults_and_validates_config() {
+        assert_eq!(Settings::default().scroll_speed(), 1.0);
+        for (value, expected) in [
+            ("0.5", 0.5),
+            ("3", 3.0),
+            ("0.1", 0.1),
+            ("10", 10.0),
+            ("0.01", MIN_SCROLL_SPEED),
+            ("100", MAX_SCROLL_SPEED),
+            ("0", DEFAULT_SCROLL_SPEED),
+            ("-1", DEFAULT_SCROLL_SPEED),
+            ("NaN", DEFAULT_SCROLL_SPEED),
+            ("inf", DEFAULT_SCROLL_SPEED),
+            ("-inf", DEFAULT_SCROLL_SPEED),
+            ("invalid", DEFAULT_SCROLL_SPEED),
+            ("", DEFAULT_SCROLL_SPEED),
+        ] {
+            let settings = Settings::parse(&format!("scroll-speed = {value}"));
+            assert_eq!(settings.scroll_speed(), expected, "{value}");
+        }
+    }
+
+    #[test]
+    fn image_paste_bridge_defaults_on_and_preserves_explicit_opt_out() {
+        assert!(Settings::default().image_paste_bridge());
+        for (value, expected) in [
+            ("true", true),
+            ("false", false),
+            ("", true),
+            ("yes", true),
+            ("1", true),
+            ("invalid", true),
+        ] {
+            let settings = Settings::parse(&format!("image-paste-bridge = {value}"));
+            assert_eq!(settings.image_paste_bridge(), expected, "{value}");
+            let text = update_lines(
+                "# kept\nunknown = kept\nscroll-speed = 0.5\n",
+                &settings.values(),
+            );
+            assert!(text.contains("# kept\nunknown = kept\n"));
+            assert_eq!(Settings::parse(&text), settings);
+        }
     }
 
     /// The only test touching the file system; it points the config
@@ -479,6 +552,22 @@ mod tests {
         assert!(rename_profile("Work", DEFAULT_PROFILE).is_err());
         assert!(rename_profile(DEFAULT_PROFILE, "Home").is_err());
         assert!(delete_profile(DEFAULT_PROFILE).is_err());
+
+        let mut work = Settings::load_profile("Work");
+        work.image_paste_bridge = Some(true);
+        work.save_profile("Work").unwrap();
+        assert!(Settings::load_profile(&active_profile()).image_paste_bridge());
+        set_active_profile(DEFAULT_PROFILE).unwrap();
+        assert!(Settings::load_profile(&active_profile()).image_paste_bridge());
+        set_active_profile("Work").unwrap();
+        assert!(Settings::load_profile(&active_profile()).image_paste_bridge());
+        work.image_paste_bridge = Some(false);
+        work.save_profile("Work").unwrap();
+        assert!(!Settings::load_profile("Work").image_paste_bridge());
+        set_active_profile(DEFAULT_PROFILE).unwrap();
+        assert!(Settings::load_profile(&active_profile()).image_paste_bridge());
+        set_active_profile("Work").unwrap();
+        assert!(!Settings::load_profile(&active_profile()).image_paste_bridge());
 
         delete_profile("Work").unwrap();
         assert_eq!(active_profile(), DEFAULT_PROFILE, "falls back to Default");

@@ -176,6 +176,27 @@ struct SpawnRequest {
     input: String,
 }
 
+/// Ownership is latched at the left-button press, never inferred from the
+/// modifiers at release. Idle also suppresses the tail of a cancelled press.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum LeftPointerOwner {
+    #[default]
+    Idle,
+    Selection,
+    HostLink,
+    Child,
+}
+
+impl LeftPointerOwner {
+    fn release_to_child(&mut self) -> bool {
+        std::mem::take(self) == Self::Child
+    }
+
+    fn suppress_motion(self, state: gdk::ModifierType) -> bool {
+        state.contains(gdk::ModifierType::BUTTON1_MASK) && self != Self::Child
+    }
+}
+
 struct Inner {
     area: glib::WeakRef<TermArea>,
     term: RefCell<Term>,
@@ -190,9 +211,12 @@ struct Inner {
     shaped: RefCell<Shaped>,
     /// Lines scrolled back from the bottom.
     view_offset: Cell<usize>,
+    scroll_speed: Cell<f64>,
+    image_paste_bridge: Cell<bool>,
     scroll_remainder: Cell<f64>,
     selection: Cell<Option<(Pos, Pos)>>,
     drag_anchor: Cell<Option<Pos>>,
+    left_pointer_owner: Cell<LeftPointerOwner>,
     /// Where a selection made with Shift and the arrow keys started; the
     /// cursor, which the program moves, is its other end.
     marking: Cell<Option<Pos>>,
@@ -209,6 +233,9 @@ struct Inner {
     /// (otherwise typed letters would reach the shell).
     keys: RefCell<Option<gtk::EventControllerKey>>,
     focused: Cell<bool>,
+    /// Invalidates clipboard reads when focus changes, even if it comes back.
+    focus_serial: Cell<u64>,
+    exited: Cell<bool>,
     /// The cursor blinks unless the program says otherwise (a setting).
     blink_default: Cell<bool>,
     /// In the hidden half of a blink.
@@ -230,6 +257,10 @@ struct Inner {
     last_activity: Cell<Option<Instant>>,
     /// Counts output, so savers can tell whether there's anything new.
     output_serial: Cell<u64>,
+    #[cfg(feature = "gui-tests")]
+    captured_input: RefCell<Option<Rc<RefCell<Vec<u8>>>>>,
+    #[cfg(feature = "gui-tests")]
+    captured_links: RefCell<Option<Rc<RefCell<Vec<String>>>>>,
 }
 
 #[derive(Clone)]
@@ -273,9 +304,14 @@ impl TermView {
             look: RefCell::new(make_look(&area, theme)),
             shaped: RefCell::default(),
             view_offset: Cell::new(0),
+            scroll_speed: Cell::new(crate::settings::DEFAULT_SCROLL_SPEED),
+            image_paste_bridge: Cell::new(
+                crate::settings::Settings::default().image_paste_bridge(),
+            ),
             scroll_remainder: Cell::new(0.0),
             selection: Cell::new(None),
             drag_anchor: Cell::new(None),
+            left_pointer_owner: Cell::new(LeftPointerOwner::Idle),
             marking: Cell::new(None),
             pointer: Cell::new((0.0, 0.0)),
             reported_cell: Cell::new(None),
@@ -284,6 +320,8 @@ impl TermView {
             browse: RefCell::default(),
             keys: RefCell::default(),
             focused: Cell::new(false),
+            focus_serial: Cell::new(0),
+            exited: Cell::new(false),
             blink_default: Cell::new(false),
             blink_hidden: Cell::new(false),
             blink_timer: RefCell::default(),
@@ -299,6 +337,10 @@ impl TermView {
             last_input: Cell::new(None),
             last_activity: Cell::new(None),
             output_serial: Cell::new(0),
+            #[cfg(feature = "gui-tests")]
+            captured_input: RefCell::default(),
+            #[cfg(feature = "gui-tests")]
+            captured_links: RefCell::default(),
         });
         inner.apply_look_to_term();
         install_handlers(&area, &inner);
@@ -313,6 +355,130 @@ impl TermView {
 
     pub fn widget(&self) -> &gtk::Widget {
         self.area.upcast_ref()
+    }
+
+    /// Intercepts user input in GUI checks instead of writing into a shell.
+    #[cfg(feature = "gui-tests")]
+    pub fn capture_input_for_test(&self) -> Rc<RefCell<Vec<u8>>> {
+        let bytes = Rc::new(RefCell::new(Vec::new()));
+        self.inner.captured_input.replace(Some(bytes.clone()));
+        bytes
+    }
+
+    /// Exercises the production pointer paths without launching a browser.
+    /// Native modifier-to-GDK translation is a separate platform check.
+    #[cfg(feature = "gui-tests")]
+    pub fn check_link_gestures_for_test(&self) {
+        use gdk::ModifierType as M;
+        let inner = &self.inner;
+        let sent = self.capture_input_for_test();
+        let opened = Rc::new(RefCell::new(Vec::new()));
+        inner.captured_links.replace(Some(opened.clone()));
+        let (x, y) = {
+            let look = inner.look.borrow();
+            (GUTTER + look.cell_w * 3.5, look.cell_h * 0.5)
+        };
+        let modifier = if crate::platform::current().cmd_shortcuts() {
+            M::META_MASK
+        } else {
+            M::CONTROL_MASK
+        };
+        let reset = |output: &str| {
+            inner.cancel_pointer();
+            inner.clear_hover();
+            inner.term.replace(Term::new(80, 24, 100));
+            inner.feeder.replace(Feeder::default());
+            inner.selection.set(None);
+            inner.view_offset.set(0);
+            inner.on_output(output.as_bytes());
+            sent.borrow_mut().clear();
+            opened.borrow_mut().clear();
+        };
+        for prefix in ["", "\x1b[?1049h"] {
+            for content in [
+                "https://example.com/real",
+                "\x1b]8;;https://example.com/real\x1b\\different label\x1b]8;;\x1b\\",
+            ] {
+                reset(&format!(
+                    "{prefix}\x1b[?1000h\x1b[?1002h\x1b[?1006h{content}"
+                ));
+                // Drag may be recognized before the click callback.
+                inner.begin_selection_drag(x, y, modifier);
+                assert!(inner.drag_anchor.get().is_none());
+                assert!(inner.pointer_pressed(1, 1, x, y, modifier));
+                assert_eq!(&*opened.borrow(), &["https://example.com/real"]);
+                assert!(self.area.tooltip_text().is_some_and(|hint| {
+                    hint.contains(crate::platform::current().link_gesture().hint())
+                }));
+                inner.begin_selection_drag(x, y, M::empty());
+                assert!(inner.drag_anchor.get().is_none());
+                assert!(!inner.pointer_pressed(3, 1, x, y, modifier));
+                inner.pointer_released(3, x, y, M::empty());
+                assert_eq!(inner.left_pointer_owner.get(), LeftPointerOwner::HostLink);
+                assert_eq!(sent.borrow().iter().filter(|&&c| c == b'\x1b').count(), 2);
+                sent.borrow_mut().clear();
+                inner.report_motion(x + 20.0, y, M::BUTTON1_MASK);
+                inner.pointer_released(1, x, y, M::empty());
+                assert!(
+                    sent.borrow().is_empty(),
+                    "consumed press must not leak motion/release"
+                );
+
+                assert!(inner.pointer_pressed(1, 1, x, y, modifier));
+                inner.cancel_pointer();
+                inner.pointer_released(1, x, y, M::empty());
+                assert!(
+                    sent.borrow().is_empty(),
+                    "cancelled host sequence must not leak release"
+                );
+                // A normal application press/release works after cancellation,
+                // even if Shift is pressed between them.
+                assert!(!inner.pointer_pressed(1, 1, x, y, M::empty()));
+                inner.pointer_released(1, x, y, M::SHIFT_MASK);
+                assert!(sent.borrow().ends_with(b"m"));
+                assert_eq!(sent.borrow().iter().filter(|&&c| c == b'\x1b').count(), 2);
+                sent.borrow_mut().clear();
+                assert!(!inner.pointer_pressed(1, 1, x, y, M::SHIFT_MASK));
+                inner.begin_selection_drag(x, y, M::SHIFT_MASK);
+                assert!(inner.drag_anchor.get().is_some());
+                inner.pointer_released(1, x, y, M::empty());
+                assert!(sent.borrow().is_empty());
+            }
+        }
+        reset("https://example.com/real");
+        assert!(!inner.pointer_pressed(1, 1, x, y, modifier | M::SHIFT_MASK));
+        assert!(opened.borrow().is_empty());
+        inner.update_hover(x, y);
+        let outside = GUTTER + inner.look.borrow().cell_w * 60.0;
+        assert!(!inner.pointer_pressed(1, 1, outside, y, modifier));
+        assert!(
+            opened.borrow().is_empty(),
+            "must not activate a stale hovered link"
+        );
+        for presses in [1, 2, 3] {
+            inner.pointer_pressed(1, presses, x, y, M::empty());
+            assert_eq!(inner.selection.get().is_some(), presses > 1);
+        }
+        if crate::platform::current().cmd_shortcuts() {
+            assert!(!inner.pointer_pressed(1, 1, x, y, M::CONTROL_MASK));
+        }
+        reset("\x1b]8;;ssh://untrusted.example\x1b\\blocked link\x1b]8;;\x1b\\");
+        assert!(inner.pointer_pressed(1, 1, x, y, modifier));
+        assert!(opened.borrow().is_empty());
+        assert!(
+            self.area
+                .tooltip_text()
+                .is_some_and(|hint| hint.contains("Not opened"))
+        );
+        inner.pointer_released(1, x, y, M::empty());
+        assert!(sent.borrow().is_empty());
+        reset(&"scroll line\r\n".repeat(40));
+        inner.scroll_view(3);
+        assert_eq!(inner.view_offset.get(), 3);
+        inner.scroll_view(-3);
+        assert_eq!(inner.view_offset.get(), 0);
+        assert!(opened.borrow().is_empty());
+        inner.captured_links.take();
     }
 
     /// The program running in the foreground, or `None` when the shell is
@@ -385,6 +551,21 @@ impl TermView {
         self.inner.term.borrow_mut().set_scrollback_limit(lines);
     }
 
+    pub fn set_scroll_speed(&self, speed: f64) {
+        if self.inner.scroll_speed.replace(speed) != speed {
+            self.inner.scroll_remainder.set(0.0);
+        }
+    }
+
+    pub fn set_image_paste_bridge(&self, enabled: bool) {
+        self.inner.image_paste_bridge.set(enabled);
+    }
+
+    #[cfg(feature = "gui-tests")]
+    pub fn image_paste_bridge(&self) -> bool {
+        self.inner.image_paste_bridge.get()
+    }
+
     pub fn copy_clipboard(&self) {
         let Some((start, end)) = self.inner.selection.get() else {
             return;
@@ -403,14 +584,38 @@ impl TermView {
     }
 
     pub fn paste_clipboard(&self) {
+        if !self.has_terminal_focus() || self.inner.exited.get() {
+            return;
+        }
+        let clipboard = self.area.clipboard();
+        let formats = clipboard.formats();
+        let mime_types = formats.mime_types();
+        if let Some(bytes) = image_paste_key(
+            self.inner.image_paste_bridge.get(),
+            clipboard_offers_image(
+                formats.contains_type(gdk::Texture::static_type()),
+                mime_types.iter().map(|mime| mime.as_str()),
+            ),
+            self.inner.encoding(),
+        ) {
+            // A deliberate clipboard request belongs only to this terminal,
+            // never to the broadcast peers via emit_input().
+            self.inner.send_input(&bytes);
+            return;
+        }
+        let serial = self.inner.focus_serial.get();
         let inner = Rc::downgrade(&self.inner);
-        self.area
-            .clipboard()
-            .read_text_async(gio::Cancellable::NONE, move |result| {
-                if let (Some(inner), Ok(Some(text))) = (inner.upgrade(), result) {
-                    inner.paste(&text);
-                }
-            });
+        clipboard.read_text_async(gio::Cancellable::NONE, move |result| {
+            if let (Some(inner), Ok(Some(text))) = (inner.upgrade(), result)
+                && inner.accepts_clipboard_result(serial)
+            {
+                inner.paste(&text);
+            }
+        });
+    }
+
+    pub fn has_terminal_focus(&self) -> bool {
+        self.inner.has_terminal_focus()
     }
 
     pub fn connect_title_changed(&self, f: impl Fn(&str) + 'static) {
@@ -567,6 +772,145 @@ fn normalize_paste(text: &str) -> String {
         .collect::<String>()
         .replace("\r\n", "\r")
         .replace('\n', "\r")
+}
+
+fn clipboard_offers_image<'a>(
+    texture: bool,
+    mime_types: impl IntoIterator<Item = &'a str>,
+) -> bool {
+    texture
+        || mime_types
+            .into_iter()
+            .any(|mime| mime.starts_with("image/"))
+}
+
+/// Returns a key action, never clipboard pixels or pasted text. None leaves
+/// the existing text reader (including empty/error handling) in charge.
+fn image_paste_key(enabled: bool, offers_image: bool, encoding: Encoding) -> Option<Vec<u8>> {
+    if !enabled || !offers_image {
+        return None;
+    }
+    keys::encode(
+        gdk::Key::v,
+        gdk::ModifierType::CONTROL_MASK,
+        Some('v'),
+        encoding,
+    )
+}
+
+#[cfg(test)]
+mod image_paste_tests {
+    use super::*;
+
+    #[test]
+    fn image_offer_classification_does_not_confuse_text_or_files_with_pixels() {
+        for (mime_types, expected) in [
+            (vec!["image/png"], true),
+            (vec!["image/tiff", "text/plain"], true),
+            (vec!["text/plain"], false),
+            (vec!["text/uri-list"], false),
+            (vec!["application/octet-stream"], false),
+            (vec![], false),
+        ] {
+            let image = clipboard_offers_image(false, mime_types);
+            assert_eq!(image, expected);
+            assert_eq!(
+                image_paste_key(true, image, Encoding::default()).is_some(),
+                expected
+            );
+            assert!(image_paste_key(false, image, Encoding::default()).is_none());
+        }
+        assert!(clipboard_offers_image(true, []));
+    }
+
+    #[test]
+    fn image_key_respects_setting_and_requires_an_image_offer() {
+        for (enabled, offers_image, expected) in [
+            (false, false, None),
+            (false, true, None),
+            (true, false, None),
+            (true, true, Some(vec![0x16])),
+        ] {
+            assert_eq!(
+                image_paste_key(enabled, offers_image, Encoding::default()),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn image_key_matches_direct_control_v_in_every_keyboard_mode() {
+        for kitty_flags in [0, 1, 8, 9, 31] {
+            for modify_other_keys in [0, 1, 2] {
+                let encoding = Encoding {
+                    kitty_flags,
+                    modify_other_keys,
+                    ..Default::default()
+                };
+                assert_eq!(
+                    image_paste_key(true, true, encoding),
+                    keys::encode(
+                        gdk::Key::v,
+                        gdk::ModifierType::CONTROL_MASK,
+                        Some('v'),
+                        encoding
+                    )
+                );
+            }
+        }
+        assert_eq!(
+            image_paste_key(
+                true,
+                true,
+                Encoding {
+                    kitty_flags: 1,
+                    ..Default::default()
+                }
+            ),
+            Some(b"\x1b[118;5u".to_vec())
+        );
+    }
+}
+
+#[cfg(test)]
+mod pointer_sequence_tests {
+    use super::*;
+
+    #[test]
+    fn releases_follow_press_ownership_and_clear_the_sequence() {
+        for initial in [
+            LeftPointerOwner::Idle,
+            LeftPointerOwner::Selection,
+            LeftPointerOwner::HostLink,
+            LeftPointerOwner::Child,
+        ] {
+            let mut owner = initial;
+            assert_eq!(owner.release_to_child(), initial == LeftPointerOwner::Child);
+            assert_eq!(owner, LeftPointerOwner::Idle);
+            assert!(
+                !owner.release_to_child(),
+                "a release cannot be forwarded twice"
+            );
+        }
+    }
+
+    #[test]
+    fn only_child_owned_left_drags_reach_the_application() {
+        use gdk::ModifierType as M;
+        for owner in [
+            LeftPointerOwner::Idle,
+            LeftPointerOwner::Selection,
+            LeftPointerOwner::HostLink,
+            LeftPointerOwner::Child,
+        ] {
+            assert_eq!(
+                owner.suppress_motion(M::BUTTON1_MASK),
+                owner != LeftPointerOwner::Child
+            );
+            assert!(!owner.suppress_motion(M::BUTTON2_MASK));
+            assert!(!owner.suppress_motion(M::empty()));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -845,6 +1189,18 @@ fn ordered(selection: (Pos, Pos)) -> (Pos, Pos) {
 }
 
 impl Inner {
+    fn has_terminal_focus(&self) -> bool {
+        self.area().is_some_and(|area| {
+            area.root()
+                .and_then(|root| root.focus())
+                .is_some_and(|focus| focus == area || focus.is_ancestor(&area))
+        })
+    }
+
+    fn accepts_clipboard_result(&self, serial: u64) -> bool {
+        !self.exited.get() && self.focus_serial.get() == serial && self.has_terminal_focus()
+    }
+
     fn area(&self) -> Option<TermArea> {
         self.area.upgrade()
     }
@@ -867,6 +1223,11 @@ impl Inner {
     /// Input for the program, from the user or on their behalf.
     fn write(&self, bytes: &[u8]) {
         self.last_input.set(Some(Instant::now()));
+        #[cfg(feature = "gui-tests")]
+        if let Some(captured) = self.captured_input.borrow().as_ref() {
+            captured.borrow_mut().extend_from_slice(bytes);
+            return;
+        }
         self.respond(bytes);
     }
 
@@ -1229,6 +1590,7 @@ impl Inner {
                             crate::log::if_slow("terminal output", started);
                         }
                         if exited {
+                            inner.exited.set(true);
                             if let Some(on_exit) = inner.on_exit.borrow().as_ref() {
                                 on_exit();
                             }
@@ -1242,6 +1604,7 @@ impl Inner {
                 });
             }
             Err(err) => {
+                self.exited.set(true);
                 // Only the program: arguments such as an agent's brief span lines.
                 let program = request.argv.first().map_or("", String::as_str);
                 let message = format!(
@@ -1403,7 +1766,11 @@ impl Inner {
             match &link {
                 Some((_, link)) => {
                     area.set_cursor_from_name(Some("pointer"));
-                    area.set_tooltip_text(Some(&format!("{}\nCtrl+click to open", link.url)));
+                    area.set_tooltip_text(Some(&format!(
+                        "{}\n{}",
+                        link.url,
+                        crate::platform::current().link_gesture().hint()
+                    )));
                 }
                 None => {
                     area.set_cursor_from_name(None);
@@ -1439,6 +1806,11 @@ impl Inner {
         let Some(area) = self.area() else { return };
         match links::check(url) {
             Ok(()) => {
+                #[cfg(feature = "gui-tests")]
+                if let Some(captured) = self.captured_links.borrow().as_ref() {
+                    captured.borrow_mut().push(url.to_string());
+                    return;
+                }
                 let window = area.root().and_downcast::<gtk::Window>();
                 gtk::UriLauncher::new(url).launch(
                     window.as_ref(),
@@ -1545,6 +1917,115 @@ impl Inner {
         self.view_offset.set(offset as usize);
     }
 
+    /// Returns true only when Soi consumed a host link gesture.
+    fn pointer_pressed(
+        self: &Rc<Self>,
+        button: u32,
+        presses: i32,
+        x: f64,
+        y: f64,
+        state: gdk::ModifierType,
+    ) -> bool {
+        if let Some(area) = self.area() {
+            area.grab_focus();
+        }
+        self.marking.set(None);
+        if button == 1 {
+            self.left_pointer_owner.set(LeftPointerOwner::Selection);
+            // Pointer motion may not have run since the output changed.
+            self.update_hover(x, y);
+            if crate::platform::current()
+                .link_gesture()
+                .matches(button, state)
+                && self.hovered_link.borrow().is_some()
+            {
+                self.left_pointer_owner.set(LeftPointerOwner::HostLink);
+                self.drag_anchor.set(None);
+                self.open_hovered_link();
+                return true;
+            }
+        }
+        let reporting = self.term.borrow().modes.mouse_reporting;
+        if reporting && !state.contains(gdk::ModifierType::SHIFT_MASK) {
+            if button == 1 {
+                self.left_pointer_owner.set(LeftPointerOwner::Child);
+            }
+            self.report_mouse(button.saturating_sub(1), true, x, y, state);
+            return false;
+        }
+        match button {
+            1 if self.browse.borrow().is_some() => {
+                let pos = self.cell_at(x, y);
+                if let Some(browse) = self.browse.borrow_mut().as_mut() {
+                    browse.cursor = pos;
+                }
+                self.queue_draw();
+            }
+            1 if presses >= 2 => {
+                let (abs, col) = self.cell_at(x, y);
+                let span = if presses == 2 {
+                    self.term.borrow().word_at(abs, col)
+                } else {
+                    Some(self.term.borrow().line_span(abs))
+                };
+                self.selection.set(span);
+                self.drag_anchor.set(None);
+                self.copy_selection();
+                self.queue_draw();
+            }
+            1 => {
+                self.selection.set(None);
+                self.queue_draw();
+            }
+            2 => {
+                if let Some(area) = self.area() {
+                    let weak = Rc::downgrade(self);
+                    area.primary_clipboard().read_text_async(
+                        gio::Cancellable::NONE,
+                        move |result| {
+                            if let (Some(inner), Ok(Some(text))) = (weak.upgrade(), result) {
+                                inner.paste(&text);
+                            }
+                        },
+                    );
+                }
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn pointer_released(&self, button: u32, x: f64, y: f64, state: gdk::ModifierType) {
+        let report = if button == 1 {
+            let mut owner = self.left_pointer_owner.get();
+            let report = owner.release_to_child();
+            self.left_pointer_owner.set(owner);
+            report
+        } else {
+            !state.contains(gdk::ModifierType::SHIFT_MASK)
+        };
+        if report {
+            self.report_mouse(button.saturating_sub(1), false, x, y, state);
+        }
+    }
+
+    fn begin_selection_drag(&self, x: f64, y: f64, state: gdk::ModifierType) {
+        let reporting = self.term.borrow().modes.mouse_reporting;
+        let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
+        let opening_link = self.left_pointer_owner.get() == LeftPointerOwner::HostLink
+            || (crate::platform::current().link_gesture().matches(1, state) && {
+                let (row, col) = self.cell_at(x, y);
+                self.term.borrow().link_at(row, col).is_some()
+            });
+        self.drag_anchor
+            .set(((!reporting || shift) && !opening_link).then(|| self.cell_at(x, y)));
+    }
+
+    fn cancel_pointer(&self) {
+        self.left_pointer_owner.set(LeftPointerOwner::Idle);
+        self.drag_anchor.set(None);
+    }
+
     /// Reports a mouse event to the program (SGR encoding).
     fn report_mouse(&self, button: u32, pressed: bool, x: f64, y: f64, state: gdk::ModifierType) {
         let (sgr, reporting) = {
@@ -1578,6 +2059,9 @@ impl Inner {
     /// Tells a program that asked (modes 1002 and 1003) where the pointer
     /// moved, once per cell: how TUIs like opencode select by dragging.
     fn report_motion(&self, x: f64, y: f64, state: gdk::ModifierType) {
+        if self.left_pointer_owner.get().suppress_motion(state) {
+            return;
+        }
         let motion = self.term.borrow().modes.mouse_motion;
         // Shift is ours: it selects in the terminal instead.
         if motion == MouseMotion::None || state.contains(gdk::ModifierType::SHIFT_MASK) {
@@ -2028,6 +2512,10 @@ fn install_handlers(area: &TermArea, inner: &Rc<Inner>) {
     focus.connect_leave(move |_| {
         if let Some(inner) = weak.upgrade() {
             inner.focused.set(false);
+            inner.cancel_pointer();
+            inner
+                .focus_serial
+                .set(inner.focus_serial.get().wrapping_add(1));
             if inner.term.borrow().modes.focus_events {
                 inner.write(b"\x1b[O");
             }
@@ -2044,89 +2532,39 @@ fn install_handlers(area: &TermArea, inner: &Rc<Inner>) {
     let weak = Rc::downgrade(inner);
     click.connect_pressed(move |gesture, presses, x, y| {
         let Some(inner) = weak.upgrade() else { return };
-        if let Some(area) = inner.area() {
-            area.grab_focus();
-        }
-        inner.marking.set(None);
-        let state = gesture.current_event_state();
-        if gesture.current_button() == 1
-            && state.contains(gdk::ModifierType::CONTROL_MASK)
-            && inner.open_hovered_link()
-        {
-            return;
-        }
-        let reporting = inner.term.borrow().modes.mouse_reporting;
-        if reporting && !state.contains(gdk::ModifierType::SHIFT_MASK) {
-            let button = gesture.current_button().saturating_sub(1);
-            inner.report_mouse(button, true, x, y, state);
-            return;
-        }
-        match gesture.current_button() {
-            1 if inner.browse.borrow().is_some() => {
-                let pos = inner.cell_at(x, y);
-                if let Some(browse) = inner.browse.borrow_mut().as_mut() {
-                    browse.cursor = pos;
-                }
-                inner.queue_draw();
-            }
-            // Double-click: the word; triple-click: the whole line.
-            1 if presses >= 2 => {
-                let (abs, col) = inner.cell_at(x, y);
-                let span = if presses == 2 {
-                    inner.term.borrow().word_at(abs, col)
-                } else {
-                    Some(inner.term.borrow().line_span(abs))
-                };
-                inner.selection.set(span);
-                inner.drag_anchor.set(None);
-                inner.copy_selection();
-                inner.queue_draw();
-            }
-            1 => {
-                inner.selection.set(None);
-                inner.queue_draw();
-            }
-            2 => {
-                if let Some(area) = inner.area() {
-                    let weak = Rc::downgrade(&inner);
-                    area.primary_clipboard().read_text_async(
-                        gio::Cancellable::NONE,
-                        move |result| {
-                            if let (Some(inner), Ok(Some(text))) = (weak.upgrade(), result) {
-                                inner.paste(&text);
-                            }
-                        },
-                    );
-                }
-            }
-            _ => {}
+        if inner.pointer_pressed(
+            gesture.current_button(),
+            presses,
+            x,
+            y,
+            gesture.current_event_state(),
+        ) {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
         }
     });
     let weak = Rc::downgrade(inner);
     click.connect_released(move |gesture, _, x, y| {
         let Some(inner) = weak.upgrade() else { return };
-        let state = gesture.current_event_state();
-        if inner.term.borrow().modes.mouse_reporting
-            && !state.contains(gdk::ModifierType::SHIFT_MASK)
-        {
-            let button = gesture.current_button().saturating_sub(1);
-            inner.report_mouse(button, false, x, y, state);
+        inner.pointer_released(
+            gesture.current_button(),
+            x,
+            y,
+            gesture.current_event_state(),
+        );
+    });
+    let weak = Rc::downgrade(inner);
+    click.connect_cancel(move |_, _| {
+        if let Some(inner) = weak.upgrade() {
+            inner.cancel_pointer();
         }
     });
-    area.add_controller(click);
+    area.add_controller(click.clone());
 
     let drag = gtk::GestureDrag::new();
     let weak = Rc::downgrade(inner);
     drag.connect_drag_begin(move |gesture, x, y| {
         let Some(inner) = weak.upgrade() else { return };
-        let reporting = inner.term.borrow().modes.mouse_reporting;
-        let state = gesture.current_event_state();
-        let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
-        let opening_link = state.contains(gdk::ModifierType::CONTROL_MASK)
-            && inner.hovered_link.borrow().is_some();
-        inner
-            .drag_anchor
-            .set(((!reporting || shift) && !opening_link).then(|| inner.cell_at(x, y)));
+        inner.begin_selection_drag(x, y, gesture.current_event_state());
     });
     let weak = Rc::downgrade(inner);
     drag.connect_drag_update(move |gesture, dx, dy| {
@@ -2149,11 +2587,20 @@ fn install_handlers(area: &TermArea, inner: &Rc<Inner>) {
     });
     let weak = Rc::downgrade(inner);
     drag.connect_drag_end(move |_, _, _| {
-        if let Some(inner) = weak.upgrade() {
+        if let Some(inner) = weak.upgrade()
+            && inner.drag_anchor.replace(None).is_some()
+        {
             inner.copy_selection();
         }
     });
-    area.add_controller(drag);
+    let weak = Rc::downgrade(inner);
+    drag.connect_cancel(move |_, _| {
+        if let Some(inner) = weak.upgrade() {
+            inner.cancel_pointer();
+        }
+    });
+    area.add_controller(drag.clone());
+    click.group_with(&drag);
 
     let motion = gtk::EventControllerMotion::new();
     let weak = Rc::downgrade(inner);
@@ -2180,7 +2627,7 @@ fn install_handlers(area: &TermArea, inner: &Rc<Inner>) {
         let Some(inner) = weak.upgrade() else {
             return glib::Propagation::Proceed;
         };
-        let total = inner.scroll_remainder.get() + dy * 3.0;
+        let total = inner.scroll_remainder.get() + dy * inner.scroll_speed.get();
         let lines = total.trunc() as isize;
         inner.scroll_remainder.set(total.fract());
         if lines == 0 {

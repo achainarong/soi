@@ -269,7 +269,7 @@ pub(super) fn install_shortcuts(state: &App) {
             for keyval in keyvals {
                 let weak = Rc::downgrade(state);
                 let id = binding.id;
-                let edits = edits_text(keyval, mods);
+                let edits = edits_text(keyval, mods) || matches!(id, "copy" | "cut" | "paste");
                 let action = gtk::CallbackAction::new(move |window, _| {
                     if edits && editing_text(window) {
                         return glib::Propagation::Proceed;
@@ -303,6 +303,11 @@ pub(super) fn reload_shortcuts(shared: &Shared) {
 pub(super) fn run_action(state: &App, id: &str) {
     let pane = current_pane(state);
     let terminal = current_terminal(state);
+    if matches!(id, "copy" | "cut" | "paste")
+        && !terminal.as_ref().is_some_and(TermView::has_terminal_focus)
+    {
+        return;
+    }
     match id {
         "new-tab" => {
             if let Some(pane) = pane {

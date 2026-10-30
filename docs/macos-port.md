@@ -78,6 +78,50 @@ Platform differences remain behind `src/platform/`; Soi's files use XDG paths
 on macOS, its socket uses `$TMPDIR`, and its default font is Menlo. See the
 README for current Cmd shortcuts and installation details.
 
+## Native terminal links
+
+The link policy uses Command+left-click on macOS and Ctrl+left-click on Linux,
+with the real target and matching hint shown on hover. Extra keyboard modifiers
+do not activate links. Control-click on macOS is not retained as a link alias;
+it follows the existing non-link pointer path, not a newly added context menu.
+The host OS selects the gesture, regardless of a child container or SSH host.
+
+Consumed link presses own their drag/release sequence, so mouse-reporting
+applications do not receive an unmatched release. Shift selection override
+remains available. Link validation and native safe launching are unchanged.
+
+The provisional Command policy uses GDK Meta, matching the existing GTK
+accelerator convention. Real Command-click event mapping is still **not
+verified** in this change: native pointer automation lacks Accessibility
+permission. GTK policy/ownership checks do not substitute for that check or
+for a Linux desktop run. Record both before claiming native acceptance.
+
+## Image paste and editable-field focus
+
+Cmd+V is Soi's terminal Paste action; direct Ctrl+V belongs to the terminal
+application. Image delegation is enabled by default on macOS and Linux. The profile
+setting `image-paste-bridge = true` (Settings ▸ Terminal ▸ Delegate image paste
+to terminal apps) sends one encoded Ctrl+V to the focused application when the
+clipboard offers an image, including image+text offers. Set
+`image-paste-bridge = false` to opt out; explicit false values survive upgrades.
+It follows the effective Paste binding and does not broadcast the delegated key.
+Text-only paste retains its existing safeguards. Editable GUI fields keep their
+native cut/copy/paste handling; pending clipboard text is discarded if terminal
+focus changes or the terminal exits before the read completes.
+
+The bridge does not read image pixels, create image files, or transport them to
+remote/container applications. The application must read the clipboard itself.
+In shells Ctrl+V can quote the next key. Selecting terminal text can replace a
+copied image because Soi currently copies selections to the standard clipboard.
+Disable the bridge to restore text-only terminal paste; resetting shortcuts
+does not change the setting.
+
+Automated checks exercise profile updates, format-based dispatch, text safety,
+focus, bindings, and isolated broadcast behavior in GTK. They do not establish
+image-attachment compatibility for every OpenCode/Claude Code/Pi version or
+Linux desktop backend. Those native application checks must be reported
+separately, with unavailable hosts marked not run.
+
 ## Stale window tiles
 
 GTK's macOS layer (`GdkMacosLayer`) splits the window into tiles and gives

@@ -285,7 +285,7 @@ popover check, popover radio {{ color: {fg}; }}
     )
 }
 
-/// Re-applies theme, font, scrollback and opacity to every open terminal.
+/// Re-applies theme, font, scrolling and opacity to every open terminal.
 pub(super) fn apply_settings(shared: &Shared) {
     let mut theme = effective_theme(&shared.settings.borrow());
     // The window scale from the settings, and zoom in/out on top of it.
@@ -301,13 +301,17 @@ pub(super) fn apply_settings(shared: &Shared) {
         theme.font = Some(font);
     }
     let scrollback = shared.settings.borrow().scrollback_lines() as usize;
+    let scroll_speed = shared.settings.borrow().scroll_speed();
     let blink = shared.settings.borrow().cursor_blink();
+    let image_paste_bridge = shared.settings.borrow().image_paste_bridge();
     for window in shared.windows() {
         for pane in window.panes.borrow().values() {
             for tab in pane.tabs.borrow().iter() {
                 tab.terminal.set_theme(&theme);
                 tab.terminal.set_scrollback(scrollback);
+                tab.terminal.set_scroll_speed(scroll_speed);
                 tab.terminal.set_cursor_blink(blink);
+                tab.terminal.set_image_paste_bridge(image_paste_bridge);
             }
         }
     }
