@@ -155,12 +155,14 @@ mod tests {
         let mut scanned = group_scan(group);
         found.sort_unstable();
         scanned.sort_unstable();
+        // Read /proc while the child is alive; cleanup can remove its entry.
+        let name = found.first().and_then(|&pid| comm(pid));
         let _ = std::process::Command::new("/bin/kill")
             .args(["--", &format!("-{group}")])
             .status();
         let _ = leader.wait();
         assert_eq!(found.len(), 1);
         assert_eq!(found, scanned);
-        assert_eq!(comm(found[0]).as_deref(), Some("sleep"));
+        assert_eq!(name.as_deref(), Some("sleep"));
     }
 }
