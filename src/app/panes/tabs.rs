@@ -54,6 +54,7 @@ pub(in crate::app) fn add_command_tab(
             settings.image_paste_bridge(),
         )
     };
+    let restoring = id.is_some();
     let id = id.unwrap_or_else(Uuid::new_v4);
     // Lets shell configs detect soi, and agents report to it.
     let mut env = panel::tab_env(id);
@@ -83,10 +84,8 @@ pub(in crate::app) fn add_command_tab(
     if let Some(program) = &program {
         terminal.set_program(program);
     }
-    let restored = session::scrollback::load(id);
-    if let Some(saved) = &restored {
-        terminal.restore(saved);
-        terminal.restore("\x1b[2m── restored ──\x1b[0m\r\n");
+    if restoring {
+        terminal.defer_start_for_restore();
     }
 
     let title = gtk::Label::builder()
@@ -127,8 +126,12 @@ pub(in crate::app) fn add_command_tab(
         close: close.clone(),
         cwd,
         saved_output: Cell::new(0),
-        untouched: Cell::new(restored.is_some()),
+        output_save: RefCell::default(),
+        untouched: Cell::new(restoring),
     });
+    if restoring {
+        restore_output(&state.shared, &tab);
+    }
     info.tabs.borrow_mut().push(tab.clone());
     let index = info.tabs.borrow().len() - 1;
     panel::register(&state.shared, &tab);
@@ -212,6 +215,96 @@ pub(in crate::app) fn add_command_tab(
 
     update_tab_strip(&info);
     Some(index)
+}
+
+fn restore_output(shared: &Rc<Shared>, tab: &Rc<Tab>) {
+    let id = tab.id;
+    restore_output_with(
+        shared,
+        tab,
+        async move {
+            gio::spawn_blocking(move || session::scrollback::load(id))
+                .await
+                .map_err(|_| "The saved-output reader stopped unexpectedly.".to_string())?
+                .map_err(|error| error.to_string())
+        },
+        std::time::Duration::from_secs(5),
+    );
+}
+
+/// Only an accepted, timely result can enable saving over the original. The
+/// worker may finish after timeout, but its late result is never applied.
+pub(in crate::app) fn restore_output_with(
+    shared: &Rc<Shared>,
+    tab: &Rc<Tab>,
+    read: impl std::future::Future<Output = Result<Option<String>, String>> + 'static,
+    timeout: std::time::Duration,
+) {
+    session::scrollback::preserve(tab.id);
+    tab.terminal.defer_start_for_restore();
+    let (shared, weak) = (Rc::downgrade(shared), Rc::downgrade(tab));
+    glib::spawn_future_local(async move {
+        let result = match glib::future_with_timeout(timeout, read).await {
+            Ok(result) => result,
+            Err(_) => Err("Restoring saved output exceeded its deadline. The disk read may still finish in the background.".into()),
+        };
+        // A cancelled quit must not strand a restoration that completed while
+        // shutdown's modal dialog was open.
+        loop {
+            let Some(shared) = shared.upgrade() else {
+                return;
+            };
+            if !shared.shutting_down.get() {
+                break;
+            }
+            drop(shared);
+            if weak.upgrade().is_none() {
+                return;
+            }
+            glib::timeout_future(std::time::Duration::from_millis(20)).await;
+        }
+        let (Some(shared), Some(tab)) = (shared.upgrade(), weak.upgrade()) else {
+            return;
+        };
+        let Some(window) = tab.terminal.widget().root().and_downcast::<gtk::Window>() else {
+            return;
+        };
+        match result {
+            Ok(saved) => {
+                tab.terminal.widget().set_tooltip_text(None);
+                if let Some(saved) = saved {
+                    tab.terminal.restore(&saved);
+                    tab.terminal.restore("\x1b[2m── restored ──\x1b[0m\r\n");
+                } else {
+                    tab.untouched.set(false);
+                }
+                session::scrollback::allow_save(tab.id);
+                tab.terminal.finish_restore();
+            }
+            Err(error) => {
+                tab.terminal.widget().set_tooltip_text(Some(&error));
+                let dialog = gtk::AlertDialog::builder()
+                    .message("Saved terminal output could not be restored")
+                    .detail(format!("{error}\n\nRetry, or start a fresh terminal while keeping the original saved output. If you start fresh, new output in this tab will not be saved during this run."))
+                    .buttons(["Retry", "Start fresh (keep saved output)"])
+                    .cancel_button(0).default_button(0).modal(true).build();
+                let (shared, weak) = (Rc::downgrade(&shared), Rc::downgrade(&tab));
+                dialog.choose(Some(&window), gio::Cancellable::NONE, move |choice| {
+                    let (Some(shared), Some(tab)) = (shared.upgrade(), weak.upgrade()) else {
+                        return;
+                    };
+                    if shared.shutting_down.get() || tab.terminal.widget().root().is_none() {
+                        return;
+                    }
+                    match choice {
+                        Ok(0) => restore_output(&shared, &tab),
+                        Ok(1) => tab.terminal.finish_restore(),
+                        _ => {}
+                    }
+                });
+            }
+        }
+    });
 }
 
 /// How long a tab waits for a shell's titles to settle before showing one.

@@ -43,18 +43,57 @@ pub(super) fn restore(state: &App, session: Option<&WindowSession>, fill: bool) 
 /// Synchronizes live contexts while retaining closed ones. Skip disk writes
 /// unless a layout, name, active tab, cwd, or window size actually changed.
 pub(super) fn save_all(shared: &Shared) {
+    if shared.recovery_error.is_some() {
+        return;
+    }
     let mut session = shared.session.borrow_mut();
     let mut changed = shared.session_dirty.get();
     for window in shared.windows() {
         changed |= session.update_window(snapshot(&window));
     }
+    if let Some((saving, receipt)) = shared.session_save.borrow().as_ref() {
+        if receipt.status() == crate::dirs::SaveStatus::Saved {
+            shared.save_failure.take();
+            shared.persisted_session.replace(Some(saving.clone()));
+            if *saving == *session {
+                shared.session_dirty.set(false);
+                return;
+            }
+        } else if *saving == *session {
+            // The writer owns this revision until it succeeds, including
+            // retries after failure. Do not reset its backoff every tick.
+            return;
+        }
+    }
     if changed {
         match session.save() {
-            Ok(()) => shared.session_dirty.set(false),
+            Ok(receipt) => {
+                shared
+                    .session_save
+                    .replace(Some((session.clone(), receipt)));
+                shared.session_dirty.set(true);
+            }
             Err(err) => {
                 shared.session_dirty.set(true);
+                shared
+                    .save_failure
+                    .replace(Some(format!("Cannot save session: {err}")));
                 crate::log::write(&format!("failed to save session: {err}"));
             }
+        }
+    }
+}
+
+/// Observe the final write without taking another UI snapshot. Focusing the
+/// saving dialog can change window metadata; that must not restart shutdown.
+pub(super) fn acknowledge_session(shared: &Shared) {
+    if let Some((saving, receipt)) = shared.session_save.borrow().as_ref()
+        && receipt.status() == crate::dirs::SaveStatus::Saved
+    {
+        shared.persisted_session.replace(Some(saving.clone()));
+        if *saving == *shared.session.borrow() {
+            shared.session_dirty.set(false);
+            shared.save_failure.take();
         }
     }
 }
@@ -62,6 +101,9 @@ pub(super) fn save_all(shared: &Shared) {
 /// Saves the output of the windows' terminals that printed something since
 /// the last time, and deletes saved output of tabs that are gone.
 pub(super) fn save_output(shared: &Shared, windows: &[App]) {
+    if shared.recovery_error.is_some() {
+        return;
+    }
     for state in windows {
         for pane in state.panes.borrow().values() {
             for tab in pane.tabs.borrow().iter() {
@@ -75,6 +117,9 @@ pub(super) fn save_output(shared: &Shared, windows: &[App]) {
 /// `save_output` for every window, a terminal per turn of the main loop:
 /// each takes milliseconds, and all at once would hold up typing.
 pub(super) fn save_output_gradually(shared: &Rc<Shared>) {
+    if shared.recovery_error.is_some() {
+        return;
+    }
     let mut tabs = shared
         .windows()
         .iter()
@@ -98,6 +143,9 @@ pub(super) fn save_output_gradually(shared: &Rc<Shared>) {
         let Some(shared) = weak.upgrade() else {
             return glib::ControlFlow::Break;
         };
+        if shared.shutting_down.get() {
+            return glib::ControlFlow::Break;
+        }
         match tabs.next() {
             Some(tab) => {
                 if let Some(tab) = tab.upgrade() {
@@ -118,19 +166,43 @@ pub(super) fn save_output_gradually(shared: &Rc<Shared>) {
 /// Saves a terminal's output if it printed something since the last time.
 fn save_tab_output(tab: &Tab) {
     let serial = tab.terminal.output_serial();
+    if let Some((saving, receipt)) = tab.output_save.borrow().as_ref() {
+        if receipt.status() == crate::dirs::SaveStatus::Saved {
+            tab.saved_output.set(*saving);
+        } else if *saving == serial {
+            return;
+        }
+    }
     if serial == tab.saved_output.get() || tab.untouched.get() {
         return;
     }
     match session::scrollback::save(tab.id, &tab.terminal.export(SAVED_LINES)) {
-        Ok(()) => tab.saved_output.set(serial),
+        Ok(receipt) => {
+            tab.output_save.replace(Some((serial, receipt)));
+        }
         Err(err) => crate::log::write(&format!("failed to save output: {err}")),
     }
 }
 
 /// Deletes saved output of tabs that are gone.
-fn prune_output(shared: &Shared) {
+pub(super) fn prune_output(shared: &Shared) {
+    if shared.recovery_error.is_some()
+        || shared.session_dirty.get()
+        || shared
+            .session_save
+            .borrow()
+            .as_ref()
+            .is_some_and(|(_, receipt)| receipt.status() != crate::dirs::SaveStatus::Saved)
+    {
+        return;
+    }
     // What's in a window now or in a saved context (closed windows).
     let mut keep = shared.session.borrow().tab_ids();
+    // A failed or in-flight layout save must not delete output still referred
+    // to by the last successfully persisted layout.
+    if let Some(saved) = shared.persisted_session.borrow().as_ref() {
+        keep.extend(saved.tab_ids());
+    }
     for state in shared.windows() {
         for pane in state.panes.borrow().values() {
             keep.extend(pane.tabs.borrow().iter().map(|tab| tab.id));
@@ -142,6 +214,9 @@ fn prune_output(shared: &Shared) {
 /// Starts the terminals of every window that aren't shown, at the size of
 /// one that is (they're resized when shown).
 pub(super) fn start_unshown_terminals(shared: &Shared) {
+    if shared.shutting_down.get() {
+        return;
+    }
     for state in shared.windows() {
         let panes = state.panes.borrow();
         let tabs: Vec<_> = panes

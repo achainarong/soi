@@ -291,6 +291,25 @@ impl Plan {
             .is_some_and(|base| base != self.text())
     }
 
+    /// Join an autosave already in flight, then save the latest edits rather
+    /// than waiting for the debounce timer. The caller owns the total deadline.
+    pub(super) async fn save_for_shutdown(self: &Rc<Self>) -> Result<(), String> {
+        while self.saving.get() {
+            glib::timeout_future(std::time::Duration::from_millis(10)).await;
+        }
+        if !self.dirty() {
+            return Ok(());
+        }
+        let (send, receive) = async_channel::bounded(1);
+        self.write(move |saved| {
+            let _ = send.try_send(saved);
+        });
+        match receive.recv().await {
+            Ok(true) => Ok(()),
+            _ => Err("A plan could not be saved. Cancel quitting to resolve its conflict or save error; your edits are still in the editor.".into()),
+        }
+    }
+
     fn note(&self, text: &str) {
         self.status.set_label(text);
     }

@@ -205,6 +205,13 @@ pub(super) fn new_window(shared: &Rc<Shared>, session: Option<&WindowSession>, f
         };
         finish_inline_renames(&owner, true);
         let shared = owner.shared.clone();
+        if shared.shutting_down.get() {
+            if owner.closing.get() {
+                owner_slot.take();
+                return glib::Propagation::Proceed;
+            }
+            return glib::Propagation::Stop;
+        }
         if !owner.close_confirmed.get() {
             let running = running_in(&owner, &all_panes(&owner));
             if !running.is_empty() {
@@ -225,8 +232,8 @@ pub(super) fn new_window(shared: &Rc<Shared>, session: Option<&WindowSession>, f
         }
         if shared.windows().len() <= 1 {
             // The last window: soi quits, so remember everything.
-            save_all(&shared);
-            owner.closing.set(true);
+            save_and_quit(&shared);
+            return glib::Propagation::Stop;
         } else {
             // Closing the native window keeps its latest context available
             // in every other window's switcher.

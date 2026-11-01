@@ -207,6 +207,8 @@ struct Inner {
     /// The shell starts once the widget has a size, so programs see the
     /// real terminal size from the beginning.
     spawn: RefCell<Option<SpawnRequest>>,
+    restore_pending: Cell<bool>,
+    deferred_size: Cell<Option<(i32, i32)>>,
     look: RefCell<Look>,
     shaped: RefCell<Shaped>,
     /// Lines scrolled back from the bottom.
@@ -301,6 +303,8 @@ impl TermView {
                 env,
                 input: String::new(),
             })),
+            restore_pending: Cell::new(false),
+            deferred_size: Cell::new(None),
             look: RefCell::new(make_look(&area, theme)),
             shaped: RefCell::default(),
             view_offset: Cell::new(0),
@@ -725,6 +729,21 @@ impl TermView {
         term.take_finished();
         term.take_progress();
         term.take_colors();
+    }
+
+    /// Do not launch the shell until asynchronous restoration has completed.
+    pub fn defer_start_for_restore(&self) {
+        self.inner.restore_pending.set(true);
+        self.area.set_sensitive(false);
+    }
+
+    pub fn finish_restore(&self) {
+        self.inner.restore_pending.set(false);
+        self.area.set_sensitive(true);
+        if let Some((width, height)) = self.inner.deferred_size.take() {
+            self.inner.relayout(width, height);
+        }
+        self.inner.queue_draw();
     }
 
     /// Changes whenever the program prints something.
@@ -1526,6 +1545,10 @@ impl Inner {
 
     fn relayout(self: &Rc<Self>, width: i32, height: i32) {
         if width <= 0 || height <= 0 {
+            return;
+        }
+        if self.restore_pending.get() {
+            self.deferred_size.set(Some((width, height)));
             return;
         }
         let (cell_w, cell_h) = {

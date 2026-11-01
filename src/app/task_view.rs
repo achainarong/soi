@@ -17,10 +17,10 @@ const TABS: [(&str, &str); 4] = [
     ("changes", "Changes"),
 ];
 
-struct View {
+pub(super) struct View {
     state: Weak<State>,
     ws: Rc<WorkspaceUi>,
-    window: gtk::Window,
+    pub(super) window: gtk::Window,
     /// Fields the form does not edit (id, repository, branch) come from here.
     initial: TaskContext,
     title: gtk::Entry,
@@ -498,6 +498,11 @@ pub(super) fn open(state: &App) {
         },
         discard: Cell::new(false),
     });
+    {
+        let mut views = state.shared.task_views.borrow_mut();
+        views.retain(|view| view.strong_count() > 0);
+        views.push(Rc::downgrade(&view));
+    }
     for item in &initial.checklist {
         add_item(&view, item);
     }
@@ -690,6 +695,13 @@ pub(super) fn open(state: &App) {
         let Some(owner) = owner_slot.borrow().clone() else {
             return glib::Propagation::Proceed;
         };
+        if owner
+            .state
+            .upgrade()
+            .is_some_and(|state| state.shared.shutting_down.get())
+        {
+            return glib::Propagation::Stop;
+        }
         let result = confirm_close(&owner);
         if result == glib::Propagation::Proceed {
             owner_slot.take();
@@ -703,10 +715,20 @@ pub(super) fn open(state: &App) {
         let Some(view) = weak.upgrade() else {
             return glib::ControlFlow::Break;
         };
-        poll_plan(&view);
+        if !view
+            .state
+            .upgrade()
+            .is_some_and(|state| state.shared.shutting_down.get())
+        {
+            poll_plan(&view);
+        }
         glib::ControlFlow::Continue
     });
     window.present();
+}
+
+pub(super) async fn save_for_shutdown(view: &Rc<View>) -> Result<(), String> {
+    plan::save_for_shutdown(view).await
 }
 
 fn add_item(view: &Rc<View>, item: &ChecklistItem) {
