@@ -160,6 +160,33 @@ inside, so you don't need GTK installed:
 
 Settings ▸ Agents sets up Claude Code, OpenCode and Pi for a downloaded soi.
 
+### Release validation
+
+The Release workflow tests the built AppImages on latest Ubuntu (x86_64 and
+ARM64), Ubuntu 24.04, stable Debian, latest Fedora and rolling Arch Linux.
+It also tests the extracted Apple Silicon app bundle on `macos-latest`.
+Linux tests use clean containers with a virtual X11 display, not system GTK.
+Build environments stay pinned to preserve compatibility.
+
+Each test checks agent-command output and exit codes with isolated settings,
+then requires a visible application window that stays alive for three seconds.
+Crashes, missing windows and timeouts fail the release gate. Logs are uploaded
+as workflow artifacts; publishing waits for every platform to pass. Manual
+Release workflow runs build and test without publishing.
+
+To run the same checks locally (Linux needs `xdotool`, a display and D-Bus):
+
+```sh
+python3 scripts/test_release.py /path/to/soi.AppImage
+# macOS:
+python3 scripts/test_release.py /path/to/soi.app/Contents/MacOS/soi
+# Test the harness itself, without GTK:
+python3 -m unittest discover -s scripts -p 'test_test_release.py' -v
+```
+
+These are startup smoke tests, not full desktop interaction, Wayland, FUSE,
+installer or Intel macOS coverage.
+
 ### Build from source
 
 You need Rust (1.92 or newer) and GTK 4.14 or newer with its development
