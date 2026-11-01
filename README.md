@@ -46,6 +46,7 @@ To uninstall, delete `~/.local/bin/soi`, plus
 `~/.config/soi` and `~/.local/state/soi`.
 
 Other ways to install are under [Install](#install).
+For Ubuntu on WSL, see [WSL Ubuntu](#wsl-ubuntu).
 
 ## Features
 
@@ -227,6 +228,121 @@ cargo test --features gui-tests --test gui -- --list
 cargo test --features gui-tests --test gui -- --exact bash_marks_its_commands
 python3 -B -m unittest discover -s scripts -p 'test_*.py'  # packaging regressions
 ```
+
+### WSL Ubuntu
+
+The following source-build setup worked on Ubuntu 26.04.1 under WSL with
+Rust 1.93. WSL needs GUI support (normally WSLg) to display soi's windows.
+Run the Linux commands below inside Ubuntu, not Windows PowerShell.
+
+#### Build and test
+
+Install the build dependencies, including both the Rust compiler and Cargo:
+
+```sh
+sudo apt update
+sudo apt install build-essential pkg-config git libgtk-4-dev rustc cargo
+rustc --version
+cargo --version
+```
+
+Rust must be 1.92 or newer. Older Ubuntu releases may provide an older
+compiler; use [rustup](https://rustup.rs/) if needed. GTK must be 4.14 or
+newer, as described under [Build from source](#build-from-source).
+
+Clone once, then build:
+
+```sh
+git clone https://github.com/achainarong/soi.git ~/soi-source
+cd ~/soi-source
+make
+```
+
+If the checkout already exists, skip `git clone`. `make` only builds
+`target/release/soi`; it does not replace an installed version.
+
+Fully close any existing soi instance, then test from a separate WSL
+terminal (for example, Ubuntu in Windows Terminal):
+
+```sh
+cd ~/soi-source
+LIBGL_ALWAYS_SOFTWARE=1 ./target/release/soi
+```
+
+`LIBGL_ALWAYS_SOFTWARE=1` requests software rendering instead of hardware
+GPU acceleration. It avoided Mesa/ZINK/EGL initialization errors in the
+tested WSL environment, but may use more CPU. It is a workaround for that
+graphics path, not a repair of WSL's GPU support. A working accelerated
+setup may not need it. Close soi completely before comparing launches;
+another launch can activate the existing instance instead.
+
+#### Install and launch
+
+After a successful test, close soi and install for your user, without sudo:
+
+```sh
+cd ~/soi-source
+make install
+```
+
+This installs `~/.local/bin/soi` (replacing an AppImage at that path), an
+icon and an app-menu entry. Settings and layouts stay in `~/.config/soi`
+and `~/.local/state/soi`.
+
+If `soi` is not found, fix PATH for the current shell:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+For future Bash sessions, add that line once to `~/.bashrc`. Then launch:
+
+```sh
+LIBGL_ALWAYS_SOFTWARE=1 soi
+```
+
+The app-menu entry does not automatically apply the software-rendering
+setting; use the terminal command when it is needed.
+
+#### Troubleshooting
+
+- **`cargo: No such file or directory` during `make`:** install Cargo with
+  `sudo apt install cargo`, then retry `make` in `~/soi-source`.
+- **`soi: command not found`:** check PATH as above, or launch with
+  `LIBGL_ALWAYS_SOFTWARE=1 "$HOME/.local/bin/soi"`.
+- **Mesa, ZINK or EGL warnings:** close the app and test with
+  `LIBGL_ALWAYS_SOFTWARE=1`. This is separate from media-library errors.
+- **AppImage media-library errors:** the tested AppImage first reported
+  missing `libGLESv2.so.2`, `libgstvideo-1.0.so.0` and `libgstgl-1.0.so.0`.
+  Ubuntu provides these in `libgles2`, `libgstreamer-plugins-base1.0-0`
+  and `libgstreamer-gl1.0-0`, respectively. After installing them, it reported
+  `libgstaudio-1.0.so.0: undefined symbol: g_sort_array`. This suggests a
+  mismatch between bundled GLib and Ubuntu's newer media libraries, rather
+  than another missing package. The source build above resolved the media
+  errors in this setup by using the system libraries. Do not downgrade
+  system libraries or force a system GLib into the AppImage with
+  `LD_PRELOAD`; that preload attempt caused a segmentation fault here.
+- **`Error 127 (ignored)` during `make install`:** if this follows
+  `update-desktop-database` or `kbuildsycoca6`, an optional desktop-cache
+  refresh tool is missing. These failures are deliberately ignored and do
+  not mean the executable failed to install.
+- **Agent setup skipped / no agents running:** expected if the agent tools
+  are not installed or started. They are not required to use soi as a
+  terminal. See [Agents](#agents) when setting them up later.
+
+#### Update a source installation
+
+With no local source changes:
+
+```sh
+cd ~/soi-source
+git pull --ff-only
+make
+```
+
+Test the new binary with the command above, close soi, then run
+`make install`. Rerunning the quick-install script instead would replace
+the source-built executable with the downloaded AppImage again.
 
 ## Default shortcuts
 
