@@ -24,6 +24,11 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "got 7"):
             self.command("raise SystemExit(7)")
 
+    def test_loader_error_is_in_failure_message(self):
+        with self.assertRaisesRegex(RuntimeError, "libharfbuzz.so.0"):
+            self.command("import sys; print('missing libharfbuzz.so.0', file=sys.stderr); "
+                         "raise SystemExit(127)")
+
     def test_missing_output_fails(self):
         with self.assertRaisesRegex(RuntimeError, "Missing expected output"):
             self.command("pass", contains="usage")
@@ -31,6 +36,11 @@ class ReleaseTests(unittest.TestCase):
     def test_command_timeout_fails_and_reaps(self):
         with self.assertRaisesRegex(RuntimeError, "timed out"):
             self.command("import time; time.sleep(60)", timeout=0.1)
+
+    def test_timeout_includes_captured_output(self):
+        with self.assertRaisesRegex(RuntimeError, "startup stalled"):
+            self.command("import time; print('startup stalled', flush=True); time.sleep(60)",
+                         timeout=0.2)
 
     def test_gui_crash_fails_even_if_window_probe_succeeds(self):
         process = Mock()

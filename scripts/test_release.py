@@ -34,13 +34,13 @@ def check_command(command, env, log, expected=0, contains=None, timeout=30):
             stop(process)
             output, _ = process.communicate(timeout=5)
             log.write(output)
-            raise RuntimeError(f"Command timed out after {timeout}s") from error
+            raise RuntimeError(f"Command timed out after {timeout}s\n{output}") from error
         log.write(output)
         log.flush()
         if process.returncode != expected:
-            raise RuntimeError(f"Expected exit {expected}, got {process.returncode}")
+            raise RuntimeError(f"Expected exit {expected}, got {process.returncode}\n{output}")
         if contains is not None and contains not in output:
-            raise RuntimeError(f"Missing expected output: {contains!r}")
+            raise RuntimeError(f"Missing expected output: {contains!r}\n{output}")
     finally:
         stop(process)
 
@@ -138,6 +138,11 @@ def main():
                                        stderr=subprocess.STDOUT, start_new_session=True)
             try:
                 wait_for_window(process, lambda: has_window(probe, process))
+            except Exception:
+                log.flush()
+                print((args.logs / "gui.log").read_text(errors="replace"),
+                      file=sys.stderr, flush=True)
+                raise
             finally:
                 stop(process)
     print("PASS: packaged commands and visible GUI startup")

@@ -48,7 +48,20 @@ sed -e 's|@BINDIR@/||' -e 's|@ICON@|dev.soi.Soi|' \
 
 # linuxdeploy is an AppImage itself; this runs it without FUSE (as in CI).
 export APPIMAGE_EXTRACT_AND_RUN=1
+# linuxdeploy excludes these as desktop-system libraries by default. Our
+# bundled GTK/Pango needs them even on a host without GTK installed. Force
+# their deployment, but leave graphics drivers and glibc to the host.
+set --
+for soname in libharfbuzz.so.0 libfribidi.so.0 libfontconfig.so.1 libfreetype.so.6; do
+    library=$(ldconfig -p | awk -v name="$soname" '$1 == name { print $NF; exit }')
+    if [ -z "$library" ] || [ ! -f "$library" ]; then
+        echo "Missing packaging dependency: $soname" >&2
+        exit 1
+    fi
+    set -- "$@" --library "$library"
+done
 PATH="$tools/gtk-plugin:$PATH" DEPLOY_GTK_VERSION=4 "$linuxdeploy" \
+    "$@" \
     --appdir "$appdir" \
     --executable "$binary" \
     --desktop-file "$work/dev.soi.Soi.desktop" \
