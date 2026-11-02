@@ -4,8 +4,8 @@
 
 use std::collections::HashSet;
 use std::fs;
-use std::io;
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::io::{self, Read};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -245,8 +245,16 @@ impl Session {
     }
 
     /// The saved session, legacy ones converted.
+    #[cfg(feature = "gui-tests")]
     pub fn restored() -> Self {
-        let session = Self::load();
+        Self::normalize(Self::load())
+    }
+
+    pub fn try_restored() -> Result<Self, String> {
+        Self::try_load().map(Self::normalize)
+    }
+
+    fn normalize(session: Self) -> Self {
         let closed = session.closed.clone();
         let archived = session.archived.clone();
         let zoom = session.zoom;
@@ -415,6 +423,32 @@ fn session_path() -> Option<PathBuf> {
 pub mod scrollback {
     use super::*;
 
+    /// Enough for 2000 richly styled lines, without trusting a damaged file's
+    /// length or allocating its entire contents during restoration.
+    const MAX_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
+
+    fn preserved() -> &'static std::sync::Mutex<HashSet<Uuid>> {
+        static IDS: std::sync::OnceLock<std::sync::Mutex<HashSet<Uuid>>> =
+            std::sync::OnceLock::new();
+        IDS.get_or_init(Default::default)
+    }
+
+    /// Protect a restoration's source until the GTK thread accepts its result.
+    /// A late reader completing after timeout must not lift this protection.
+    pub fn preserve(id: Uuid) {
+        preserved()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id);
+    }
+
+    pub fn allow_save(id: Uuid) {
+        preserved()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&id);
+    }
+
     pub(super) fn dir() -> Option<PathBuf> {
         let name = if crate::dev_mode() {
             "scrollback-dev"
@@ -428,23 +462,45 @@ pub mod scrollback {
         Some(dir()?.join(format!("{id}.txt")))
     }
 
-    pub fn load(id: Uuid) -> Option<String> {
-        crate::dirs::flush();
-        fs::read_to_string(path(id)?).ok()
+    pub fn load(id: Uuid) -> io::Result<Option<String>> {
+        let path = path(id).ok_or_else(|| io::Error::other("No state directory"))?;
+        match read_state_limited(&path, MAX_OUTPUT_BYTES) {
+            Ok(text) => Ok(Some(text)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(io::Error::new(
+                error.kind(),
+                format!("Cannot restore {}: {error}", path.display()),
+            )),
+        }
     }
 
     /// Saves on the writer thread (see `dirs::save_later`), which logs
     /// what fails.
-    pub fn save(id: Uuid, text: &str) -> io::Result<()> {
+    pub fn save(id: Uuid, text: &str) -> io::Result<crate::dirs::SaveReceipt> {
+        if preserved()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&id)
+        {
+            return Err(io::Error::other(
+                "The original saved output is protected after an incomplete restore; new output in this tab is not being saved.",
+            ));
+        }
         let path = path(id).ok_or_else(|| io::Error::other("no state directory"))?;
         let content = (!text.is_empty()).then(|| (text.as_bytes().to_vec(), PRIVATE_FILE));
-        crate::dirs::save_later(path, content, "output");
-        Ok(())
+        Ok(crate::dirs::save_later(path, content, "output"))
     }
 
     /// Deletes saved output of tabs that are gone, on the writer thread.
     pub fn prune(keep: &HashSet<Uuid>) {
-        let keep = keep.clone();
+        let mut keep = keep.clone();
+        keep.extend(
+            preserved()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .copied(),
+        );
         crate::dirs::write_later(move || {
             let Some(entries) = dir().and_then(|dir| fs::read_dir(dir).ok()) else {
                 return;
@@ -464,44 +520,145 @@ pub mod scrollback {
 
 impl Session {
     /// Loads the saved session, falling back to a default one.
+    #[cfg(feature = "gui-tests")]
     pub fn load() -> Self {
+        Self::try_load().unwrap_or_else(|error| {
+            crate::log::write(&error);
+            Self::default()
+        })
+    }
+
+    pub fn try_load() -> Result<Self, String> {
         let Some(path) = session_path() else {
-            return Self::default();
+            return Err("No state directory.".into());
         };
-        crate::dirs::flush();
-        match fs::read_to_string(&path) {
-            Ok(json) => match serde_json::from_str::<Session>(&json) {
-                Ok(session) => session,
-                Err(err) => {
-                    crate::log::write(&format!(
-                        "ignoring corrupt session {}: {err}",
-                        path.display()
-                    ));
-                    Self::default()
-                }
-            },
-            Err(err) if err.kind() == io::ErrorKind::NotFound => Self::default(),
-            Err(err) => {
-                crate::log::write(&format!("cannot read session {}: {err}", path.display()));
-                Self::default()
-            }
-        }
+        load_session(&path)
     }
 
     /// Writes the session atomically (see `dirs::write_atomic`), on the
     /// writer thread (see `dirs::save_later`), which logs what fails.
-    pub fn save(&self) -> io::Result<()> {
+    pub fn save(&self) -> io::Result<crate::dirs::SaveReceipt> {
         let path = session_path()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no home directory"))?;
         let json = serde_json::to_string_pretty(self)?;
-        crate::dirs::save_later(path, Some((json.into_bytes(), PRIVATE_FILE)), "session");
-        Ok(())
+        Ok(crate::dirs::save_later(
+            path,
+            Some((json.into_bytes(), PRIVATE_FILE)),
+            "session",
+        ))
+    }
+}
+
+fn read_state(path: &Path) -> io::Result<String> {
+    read_state_limited(path, 64 * 1024 * 1024)
+}
+
+fn read_state_limited(path: &Path, limit: u64) -> io::Result<String> {
+    match crate::dirs::pending_content(path) {
+        Some(Some(bytes)) => {
+            if bytes.len() as u64 > limit {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Saved state exceeds the size limit",
+                ));
+            }
+            String::from_utf8(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        }
+        Some(None) => Err(io::ErrorKind::NotFound.into()),
+        None => {
+            let file = fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(path)?;
+            let metadata = file.metadata()?;
+            if !metadata.is_file() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Saved state must be a regular file",
+                ));
+            }
+            if metadata.len() > limit {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Saved state exceeds the size limit",
+                ));
+            }
+            let mut text = String::new();
+            file.take(limit + 1).read_to_string(&mut text)?;
+            if text.len() as u64 > limit {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Saved state exceeds the size limit",
+                ));
+            }
+            Ok(text)
+        }
+    }
+}
+
+fn load_session(path: &Path) -> Result<Session, String> {
+    match read_state(path) {
+        Ok(json) => serde_json::from_str(&json)
+            .map_err(|e| format!("Cannot restore session {}: {e}", path.display())),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Session::default()),
+        Err(e) => Err(format!("Cannot read session {}: {e}", path.display())),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn state_reads_are_bounded_and_reject_fifos_without_waiting_for_a_writer() {
+        use std::os::unix::ffi::OsStrExt;
+        let root = std::env::temp_dir().join(format!("soi-read-{}", Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("output");
+        fs::write(&path, b"1234").unwrap();
+        assert_eq!(read_state_limited(&path, 4).unwrap(), "1234");
+        fs::write(&path, b"12345").unwrap();
+        assert_eq!(
+            read_state_limited(&path, 4).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"12345");
+        assert!(read_state_limited(&root, 4).is_err());
+        let fifo = root.join("fifo");
+        let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        // SAFETY: name is a terminated path owned for the duration of the call.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let started = std::time::Instant::now();
+        assert!(read_state_limited(&fifo, 4).is_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn incomplete_restores_cannot_overwrite_their_source() {
+        let id = Uuid::new_v4();
+        scrollback::preserve(id);
+        assert!(scrollback::save(id, "replacement").is_err());
+        scrollback::allow_save(id);
+    }
+
+    #[test]
+    fn load_distinguishes_missing_corrupt_and_unreadable_sessions() {
+        let root = std::env::temp_dir().join(format!("soi-recovery-{}", Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("session.json");
+        assert_eq!(load_session(&path).unwrap(), Session::default());
+        fs::write(&path, b"{ incomplete").unwrap();
+        assert!(load_session(&path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"{ incomplete");
+        assert!(
+            load_session(&root).is_err(),
+            "read failure is not an empty session"
+        );
+        fs::write(&path, serde_json::to_vec(&Session::default()).unwrap()).unwrap();
+        assert_eq!(load_session(&path).unwrap(), Session::default());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn saved_state_made_readable_by_everyone_becomes_private() {

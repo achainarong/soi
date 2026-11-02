@@ -227,6 +227,8 @@ window.soi-settings button.soi-chip:checked, window.soi-tools button.soi-chip:ch
 .soi-window-button > button:hover, .soi-window-button > button:checked {{ color: {fg}; }}
 
 window.soi-tools, window.message {{ background-color: {solid}; color: {fg}; }}
+window.soi-saving {{ font-size: {percent}%; }}
+window.soi-saving spinner {{ color: {accent}; }}
 window.soi-tools button, window.soi-tools entry, window.soi-tools dropdown > button,
 window.soi-tools textview, window.soi-tools textview text,
 window.message button, .agents-panel dropdown > button {{

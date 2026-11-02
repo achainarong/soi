@@ -11,6 +11,19 @@ macro_rules! checks {
 }
 
 checks![
+    persistence_corrupt_sessions_preserve_original_files,
+    persistence_acknowledges_writes_only_after_completion,
+    persistence_pruning_waits_for_a_successful_layout_save,
+    persistence_shutdown_spinner_stays_responsive_and_handles_timeout,
+    persistence_shutdown_retry_recovers_from_write_failure,
+    persistence_saving_dialog_follows_theme_font_and_scale,
+    persistence_shutdown_saves_plan_edits_before_the_debounce,
+    persistence_shutdown_joins_inflight_plan_saves,
+    persistence_shutdown_plan_conflicts_allow_cancelling_quit,
+    persistence_shutdown_saves_the_task_details_plan,
+    persistence_restore_failure_preserves_output_and_can_start_fresh,
+    persistence_restore_timeout_can_retry_without_applying_a_late_result,
+    persistence_restore_rejects_fifo_and_oversized_output,
     closed_windows_and_terminals_release_their_owners,
     reports_finish_at_newline_without_waiting_for_disconnect,
     idle_report_clients_time_out_and_connection_floods_are_bounded,
@@ -63,6 +76,544 @@ checks![
     agents_started_through_a_wrapper_count_as_the_agent,
     skills_commands_and_collections_are_picked_by_clicking,
 ];
+
+fn workspace_with_plan(shared: &Rc<Shared>) -> (App, Rc<WorkspaceUi>, PathBuf) {
+    let state = new_window(shared, None, true);
+    let ws = active_workspace(&state).unwrap();
+    let path = home_dir().join("shutdown-plan.md");
+    fs::write(&path, "# Original plan\n").unwrap();
+    let mut task = crate::tasks::TaskContext::new("Plan shutdown test".into(), ws.root_dir.clone());
+    task.plan = Some(path.clone());
+    ws.task.replace(Some(task));
+    (state, ws, path)
+}
+
+fn persistence_shutdown_saves_plan_edits_before_the_debounce() {
+    isolated(
+        "persistence_shutdown_saves_plan_edits_before_the_debounce",
+        || {
+            let (_app, shared) = application();
+            let (state, ws, path) = workspace_with_plan(&shared);
+            preview::toggle_for(&state, &ws);
+            let plan = ws.plan_panel.borrow().clone().unwrap();
+            wait_until(|| plan.text() == "# Original plan\n");
+            plan.buffer().set_text("# Just typed before quitting\n");
+            save_and_quit(&shared);
+            wait_until(|| state.closing.get());
+            assert_eq!(
+                fs::read_to_string(path).unwrap(),
+                "# Just typed before quitting\n"
+            );
+        },
+    );
+}
+
+fn persistence_shutdown_joins_inflight_plan_saves() {
+    isolated("persistence_shutdown_joins_inflight_plan_saves", || {
+        let (_app, shared) = application();
+        let (state, ws, path) = workspace_with_plan(&shared);
+        preview::toggle_for(&state, &ws);
+        let plan = ws.plan_panel.borrow().clone().unwrap();
+        wait_until(|| plan.text() == "# Original plan\n");
+        plan.buffer().set_text("# First revision\n");
+        assert_eq!(
+            plan.key(gdk::Key::s, gdk::ModifierType::CONTROL_MASK),
+            glib::Propagation::Stop
+        );
+        // Do not run the main loop between starting the save and editing: its
+        // completion callback is necessarily still pending at shutdown.
+        plan.buffer().set_text("# Latest revision\n");
+        save_and_quit(&shared);
+        wait_until(|| state.closing.get());
+        assert_eq!(fs::read_to_string(path).unwrap(), "# Latest revision\n");
+    });
+}
+
+fn persistence_shutdown_plan_conflicts_allow_cancelling_quit() {
+    isolated(
+        "persistence_shutdown_plan_conflicts_allow_cancelling_quit",
+        || {
+            let (_app, shared) = application();
+            let (state, ws, path) = workspace_with_plan(&shared);
+            preview::toggle_for(&state, &ws);
+            let plan = ws.plan_panel.borrow().clone().unwrap();
+            wait_until(|| plan.text() == "# Original plan\n");
+            plan.buffer().set_text("# My unsaved edits\n");
+            fs::write(&path, "# An agent's external edit\n").unwrap();
+            save_and_quit(&shared);
+            let dialog = saving_dialog();
+            let cancel = saving_button(&dialog, "Cancel quitting");
+            wait_until(|| cancel.is_visible());
+            assert!(!state.closing.get());
+            assert_eq!(plan.text(), "# My unsaved edits\n");
+            assert_eq!(
+                fs::read_to_string(&path).unwrap(),
+                "# An agent's external edit\n"
+            );
+            cancel.emit_clicked();
+            assert!(!shared.shutting_down.get());
+            assert!(state.window.child().unwrap().is_sensitive());
+            assert_eq!(plan.text(), "# My unsaved edits\n");
+            state.window.destroy();
+        },
+    );
+}
+
+fn persistence_shutdown_saves_the_task_details_plan() {
+    isolated("persistence_shutdown_saves_the_task_details_plan", || {
+        let (_app, shared) = application();
+        let (state, _ws, path) = workspace_with_plan(&shared);
+        task_view::open(&state);
+        let view = shared.task_views.borrow()[0].upgrade().unwrap();
+        let find_editor = || {
+            panel::find_descendant(view.window.upcast_ref(), &|widget| {
+                widget
+                    .downcast_ref::<gtk::TextView>()
+                    .is_some_and(|editor| {
+                        let buffer = editor.buffer();
+                        buffer.text(&buffer.start_iter(), &buffer.end_iter(), false)
+                            == "# Original plan\n"
+                    })
+            })
+        };
+        wait_until(|| find_editor().is_some());
+        let editor = find_editor().unwrap().downcast::<gtk::TextView>().unwrap();
+        editor.buffer().set_text("# Edited in Task details\n");
+        save_and_quit(&shared);
+        wait_until(|| state.closing.get());
+        assert_eq!(
+            fs::read_to_string(path).unwrap(),
+            "# Edited in Task details\n"
+        );
+    });
+}
+
+fn restore_dialog() -> Option<gtk::Window> {
+    gtk::Window::list_toplevels()
+        .into_iter()
+        .filter_map(|w| w.downcast::<gtk::Window>().ok())
+        .find(|window| {
+            panel::find_descendant(window.upcast_ref(), &|widget| {
+                widget.downcast_ref::<gtk::Button>().is_some_and(|button| {
+                    button.label().as_deref() == Some("Start fresh (keep saved output)")
+                })
+            })
+            .is_some()
+        })
+}
+
+fn persistence_restore_rejects_fifo_and_oversized_output() {
+    isolated(
+        "persistence_restore_rejects_fifo_and_oversized_output",
+        || {
+            use std::os::unix::ffi::OsStrExt;
+            let directory = crate::dirs::state_home().join("soi/scrollback-dev");
+            fs::create_dir_all(&directory).unwrap();
+            let oversized = Uuid::new_v4();
+            let path = directory.join(format!("{oversized}.txt"));
+            let length = 16 * 1024 * 1024 + 1;
+            fs::File::create(&path).unwrap().set_len(length).unwrap();
+            assert_eq!(
+                session::scrollback::load(oversized).unwrap_err().kind(),
+                std::io::ErrorKind::InvalidData
+            );
+            assert_eq!(fs::metadata(path).unwrap().len(), length);
+            let fifo = Uuid::new_v4();
+            let path = directory.join(format!("{fifo}.txt"));
+            let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+            // SAFETY: name owns the terminated path for the duration of the call.
+            assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+            let started = std::time::Instant::now();
+            assert_eq!(
+                session::scrollback::load(fifo).unwrap_err().kind(),
+                std::io::ErrorKind::InvalidInput
+            );
+            assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        },
+    );
+}
+
+fn persistence_restore_failure_preserves_output_and_can_start_fresh() {
+    isolated(
+        "persistence_restore_failure_preserves_output_and_can_start_fresh",
+        || {
+            let (_app, shared) = application();
+            let id = Uuid::new_v4();
+            let path = crate::dirs::state_home().join(format!("soi/scrollback-dev/{id}.txt"));
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, b"original\xffoutput").unwrap();
+            let mut ws = Workspace::new(home_dir());
+            if let Layout::Pane { ids, .. } = &mut ws.tabs[0].layout {
+                ids.push(id);
+            }
+            let state = new_window(
+                &shared,
+                Some(&WindowSession {
+                    sidebar: vec![Entry::Workspace(ws)],
+                    ..Default::default()
+                }),
+                true,
+            );
+            let tab = state
+                .panes
+                .borrow()
+                .values()
+                .next()
+                .unwrap()
+                .current()
+                .unwrap();
+            wait_until(|| restore_dialog().is_some());
+            assert!(tab.terminal.pid().is_none());
+            saving_button(
+                &restore_dialog().unwrap(),
+                "Start fresh (keep saved output)",
+            )
+            .emit_clicked();
+            wait_until(|| tab.terminal.pid().is_some());
+            assert!(tab.terminal.widget().is_sensitive());
+            assert!(session::scrollback::save(id, "replacement").is_err());
+            assert_eq!(fs::read(path).unwrap(), b"original\xffoutput");
+            state.window.destroy();
+        },
+    );
+}
+
+fn persistence_restore_timeout_can_retry_without_applying_a_late_result() {
+    isolated(
+        "persistence_restore_timeout_can_retry_without_applying_a_late_result",
+        || {
+            let (_app, shared) = application();
+            let state = new_window(&shared, None, true);
+            let tab = state
+                .panes
+                .borrow()
+                .values()
+                .next()
+                .unwrap()
+                .current()
+                .unwrap();
+            let path = crate::dirs::state_home().join(format!("soi/scrollback-dev/{}.txt", tab.id));
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, "saved before the stalled read\r\n").unwrap();
+            let (send, receive) = async_channel::bounded(1);
+            restore_output_with(
+                &shared,
+                &tab,
+                async move { receive.recv().await.map_err(|_| "read stopped".into()) },
+                std::time::Duration::from_millis(20),
+            );
+            wait_until(|| restore_dialog().is_some());
+            assert!(session::scrollback::save(tab.id, "replacement").is_err());
+            assert!(
+                send.try_send(Some("late output must not appear".into()))
+                    .is_err()
+            );
+            saving_button(&restore_dialog().unwrap(), "Retry").emit_clicked();
+            wait_until(|| tab.terminal.pid().is_some());
+            assert!(
+                tab.terminal
+                    .export(20)
+                    .contains("saved before the stalled read")
+            );
+            assert!(
+                !tab.terminal
+                    .export(20)
+                    .contains("late output must not appear")
+            );
+            let receipt = session::scrollback::save(tab.id, "accepted after retry").unwrap();
+            crate::dirs::flush_timeout(std::time::Duration::from_secs(2)).unwrap();
+            assert_eq!(receipt.status(), crate::dirs::SaveStatus::Saved);
+            assert_eq!(fs::read_to_string(path).unwrap(), "accepted after retry");
+            state.window.destroy();
+        },
+    );
+}
+
+fn persistence_corrupt_sessions_preserve_original_files() {
+    isolated(
+        "persistence_corrupt_sessions_preserve_original_files",
+        || {
+            let state = crate::dirs::state_home().join("soi");
+            let output = state
+                .join("scrollback-dev")
+                .join(format!("{}.txt", Uuid::new_v4()));
+            fs::create_dir_all(output.parent().unwrap()).unwrap();
+            let session = state.join("session-dev.json");
+            fs::write(&session, "{broken session").unwrap();
+            fs::write(&output, "recoverable output").unwrap();
+            let (_app, shared) = application();
+            assert!(shared.recovery_error.is_some());
+            let window = new_window(&shared, None, true);
+            save_all(&shared);
+            save_output(&shared, &shared.windows());
+            crate::dirs::flush_timeout(std::time::Duration::from_secs(2)).unwrap();
+            assert_eq!(fs::read_to_string(session).unwrap(), "{broken session");
+            assert_eq!(fs::read_to_string(output).unwrap(), "recoverable output");
+            assert!(shared.session_save.borrow().is_none());
+            window.window.destroy();
+        },
+    );
+}
+
+fn persistence_acknowledges_writes_only_after_completion() {
+    isolated(
+        "persistence_acknowledges_writes_only_after_completion",
+        || {
+            let (_app, shared) = application();
+            let (release, wait) = std::sync::mpsc::channel();
+            crate::dirs::write_later(move || {
+                let _ = wait.recv_timeout(std::time::Duration::from_secs(5));
+            });
+            let window = new_window(&shared, None, true);
+            let pending = shared.session_save.borrow().as_ref().unwrap().1.clone();
+            assert!(shared.session_dirty.get());
+            assert_eq!(pending.status(), crate::dirs::SaveStatus::Pending);
+            // Opening/reading state cannot wait for the deliberately blocked writer.
+            assert_eq!(Session::load().windows[0].id, window.id.get());
+            let tab = window
+                .panes
+                .borrow()
+                .values()
+                .next()
+                .unwrap()
+                .current()
+                .unwrap();
+            tab.saved_output.set(u64::MAX);
+            save_output(&shared, &shared.windows());
+            assert_eq!(tab.saved_output.get(), u64::MAX);
+            release.send(()).unwrap();
+            crate::dirs::flush_timeout(std::time::Duration::from_secs(2)).unwrap();
+            save_all(&shared);
+            save_output(&shared, &shared.windows());
+            assert!(!shared.session_dirty.get());
+            assert_eq!(pending.status(), crate::dirs::SaveStatus::Saved);
+            assert_eq!(tab.saved_output.get(), tab.terminal.output_serial());
+            window.window.destroy();
+        },
+    );
+}
+
+fn saving_dialog() -> gtk::Window {
+    gtk::Window::list_toplevels()
+        .into_iter()
+        .filter_map(|w| w.downcast::<gtk::Window>().ok())
+        .find(|w| w.title().as_deref() == Some("Saving Soi"))
+        .unwrap()
+}
+
+fn persistence_saving_dialog_follows_theme_font_and_scale() {
+    isolated(
+        "persistence_saving_dialog_follows_theme_font_and_scale",
+        || {
+            let (_app, shared) = application();
+            shared.settings.borrow_mut().app_font = Some("Monospace 13".into());
+            apply_settings(&shared);
+            let window = new_window(&shared, None, true);
+            let (release, wait) = std::sync::mpsc::channel();
+            crate::dirs::write_later(move || {
+                let _ = wait.recv_timeout(std::time::Duration::from_secs(15));
+            });
+            save_and_quit(&shared);
+            let dialog = saving_dialog();
+            assert!(dialog.has_css_class("soi-tools"));
+            assert!(dialog.has_css_class("soi-saving"));
+            let label = panel::find_descendant(dialog.upcast_ref(), &|w| w.is::<gtk::Label>())
+                .unwrap()
+                .downcast::<gtk::Label>()
+                .unwrap();
+            let spinner = panel::find_descendant(dialog.upcast_ref(), &|w| w.is::<gtk::Spinner>())
+                .unwrap()
+                .downcast::<gtk::Spinner>()
+                .unwrap();
+            let retry = saving_button(&dialog, "Retry");
+            let discard = saving_button(&dialog, "Quit without saving");
+            // A short line lets us measure rendered font scaling independently
+            // of wrapping as the dialog's width changes.
+            label.set_label("Saving…");
+            let matches = |actual: gdk::RGBA, expected: gdk::RGBA| {
+                (actual.red() - expected.red()).abs() < 0.01
+                    && (actual.green() - expected.green()).abs() < 0.01
+                    && (actual.blue() - expected.blue()).abs() < 0.01
+            };
+            // Exercise restyling of the same live dialog, not just its CSS class.
+            let mut unscaled_height = None;
+            for scheme in ["builtin:Nord", "builtin:Catppuccin Latte"] {
+                let theme = crate::theme::named_scheme(scheme).unwrap();
+                let foreground = theme.foreground();
+                let accent = theme.ansi_colors()[4];
+                shared.theme.replace(theme);
+                shared.settings.borrow_mut().ui_scale = Some(1.0);
+                apply_colors(&shared);
+                wait_until(|| {
+                    dialog.is_mapped()
+                        && matches(label.color(), foreground)
+                        && matches(spinner.color(), accent)
+                        && unscaled_height
+                            .is_none_or(|height| label.layout().pixel_size().1 == height)
+                });
+                assert!(matches(retry.color(), foreground));
+                assert!(matches(discard.color(), foreground));
+                let font = label.pango_context().font_description().unwrap();
+                assert_eq!(font.family(), app_font().family());
+                let normal_height = label.layout().pixel_size().1;
+                unscaled_height = Some(normal_height);
+                shared.settings.borrow_mut().ui_scale = Some(1.5);
+                apply_colors(&shared);
+                wait_until(|| {
+                    let scaled_height = label.layout().pixel_size().1;
+                    (f64::from(scaled_height) / f64::from(normal_height) - 1.5).abs() < 0.1
+                });
+                assert_eq!(
+                    label.pango_context().font_description().unwrap().family(),
+                    font.family()
+                );
+            }
+            release.send(()).unwrap();
+            // Whether saving already finished or reached its deadline, the test
+            // leaves no live windows or blocked writer behind.
+            crate::dirs::flush_timeout(std::time::Duration::from_secs(2)).unwrap();
+            finish_shutdown(&shared, &dialog);
+            assert!(window.closing.get());
+        },
+    );
+}
+
+fn persistence_pruning_waits_for_a_successful_layout_save() {
+    isolated(
+        "persistence_pruning_waits_for_a_successful_layout_save",
+        || {
+            let (_app, shared) = application();
+            let window = new_window(&shared, None, true);
+            let output_id = Uuid::new_v4();
+            let closed_id = Uuid::new_v4();
+            let mut workspace = Workspace::new(home_dir());
+            if let Layout::Pane { ids, .. } = &mut workspace.tabs[0].layout {
+                ids.push(output_id);
+            }
+            shared.session.borrow_mut().windows.push(WindowSession {
+                id: closed_id,
+                closed: true,
+                sidebar: vec![Entry::Workspace(workspace)],
+                ..Default::default()
+            });
+            shared.session_dirty.set(true);
+            save_all(&shared);
+            session::scrollback::save(output_id, "still referenced on disk").unwrap();
+            crate::dirs::flush_timeout(std::time::Duration::from_secs(2)).unwrap();
+            acknowledge_session(&shared);
+            let state = crate::dirs::state_home().join("soi");
+            let path = state.join("session-dev.json");
+            let backup = state.join("session-backup.json");
+            fs::rename(&path, &backup).unwrap();
+            fs::create_dir(&path).unwrap();
+            shared
+                .session
+                .borrow_mut()
+                .windows
+                .retain(|context| context.id != closed_id);
+            shared.session_dirty.set(true);
+            save_all(&shared);
+            save_output(&shared, &shared.windows());
+            assert!(crate::dirs::flush_timeout(std::time::Duration::from_secs(2)).is_err());
+            assert_eq!(
+                session::scrollback::load(output_id).unwrap().as_deref(),
+                Some("still referenced on disk")
+            );
+            fs::remove_dir(&path).unwrap();
+            fs::rename(&backup, &path).unwrap();
+            crate::dirs::retry_pending(true);
+            crate::dirs::flush_timeout(std::time::Duration::from_secs(2)).unwrap();
+            acknowledge_session(&shared);
+            save_output(&shared, &shared.windows());
+            crate::dirs::flush_timeout(std::time::Duration::from_secs(2)).unwrap();
+            assert!(session::scrollback::load(output_id).unwrap().is_none());
+            window.window.destroy();
+        },
+    );
+}
+
+fn saving_button(dialog: &gtk::Window, label: &str) -> gtk::Button {
+    panel::find_descendant(dialog.upcast_ref(), &|w| {
+        w.downcast_ref::<gtk::Button>()
+            .is_some_and(|button| button.label().as_deref() == Some(label))
+    })
+    .unwrap()
+    .downcast()
+    .unwrap()
+}
+
+fn persistence_shutdown_spinner_stays_responsive_and_handles_timeout() {
+    isolated(
+        "persistence_shutdown_spinner_stays_responsive_and_handles_timeout",
+        || {
+            let (_app, shared) = application();
+            let window = new_window(&shared, None, true);
+            let (release, wait) = std::sync::mpsc::channel();
+            crate::dirs::write_later(move || {
+                let _ = wait.recv_timeout(std::time::Duration::from_secs(15));
+            });
+            // The last native window's close button must use the saving flow too.
+            window.window.close();
+            assert!(shared.shutting_down.get());
+            let dialog = saving_dialog();
+            let spinner = panel::find_descendant(dialog.upcast_ref(), &|w| w.is::<gtk::Spinner>())
+                .unwrap()
+                .downcast::<gtk::Spinner>()
+                .unwrap();
+            assert!(spinner.is_spinning());
+            let discard = saving_button(&dialog, "Quit without saving");
+            assert!(!discard.is_visible());
+            save_and_quit(&shared);
+            assert_eq!(
+                saving_dialog(),
+                dialog,
+                "duplicate quits reuse the same flow"
+            );
+            let alive = Rc::new(Cell::new(false));
+            let tick = alive.clone();
+            glib::idle_add_local_once(move || tick.set(true));
+            wait_until(|| alive.get());
+            wait_until_for(std::time::Duration::from_secs(8), || discard.is_visible());
+            assert!(!spinner.is_spinning());
+            assert!(saving_button(&dialog, "Retry").is_visible());
+            assert!(!window.closing.get(), "timeout must not silently quit");
+            discard.emit_clicked();
+            assert!(window.closing.get());
+            release.send(()).unwrap();
+            crate::dirs::flush_timeout(std::time::Duration::from_secs(2)).unwrap();
+        },
+    );
+}
+
+fn persistence_shutdown_retry_recovers_from_write_failure() {
+    isolated(
+        "persistence_shutdown_retry_recovers_from_write_failure",
+        || {
+            let (_app, shared) = application();
+            let window = new_window(&shared, None, true);
+            crate::dirs::flush_timeout(std::time::Duration::from_secs(2)).unwrap();
+            // A regular file as an ancestor gives a deterministic I/O failure,
+            // without relying on this machine's permissions or free disk space.
+            let blocked = home_dir().join("blocked");
+            fs::write(&blocked, "not a directory").unwrap();
+            crate::dirs::save_later(
+                blocked.join("output"),
+                Some((b"retained".to_vec(), 0o600)),
+                "test",
+            );
+            save_and_quit(&shared);
+            let dialog = saving_dialog();
+            let retry = saving_button(&dialog, "Retry");
+            wait_until(|| retry.is_visible());
+            assert!(!window.closing.get());
+            fs::remove_file(&blocked).unwrap();
+            retry.emit_clicked();
+            wait_until(|| window.closing.get());
+            assert_eq!(fs::read(blocked.join("output")).unwrap(), b"retained");
+            assert!(!dialog.is_visible());
+        },
+    );
+}
 
 fn closed_windows_and_terminals_release_their_owners() {
     isolated("closed_windows_and_terminals_release_their_owners", || {
@@ -267,6 +818,22 @@ fn closed_task_details_release_the_editor_and_workspace() {
 pub(super) fn isolated(name: &str, test: impl FnOnce()) {
     if std::env::var_os("SOI_WINDOW_TEST_CHILD").is_some() {
         test();
+        // Last-window close is asynchronous now. Let its production save flow
+        // finish before this child process exits; otherwise surviving shells
+        // can recreate history files while the parent removes the fixture.
+        if gtk::is_initialized() {
+            let saving = || {
+                gtk::Window::list_toplevels().iter().any(|widget| {
+                    widget.downcast_ref::<gtk::Window>().is_some_and(|window| {
+                        window.is_visible() && window.title().as_deref() == Some("Saving Soi")
+                    })
+                })
+            };
+            if saving() {
+                wait_until_for(std::time::Duration::from_secs(7), || !saving());
+                crate::term::wait_for_shutdown();
+            }
+        }
         return;
     }
     // Keep Unix socket paths short on macOS (sockaddr_un has 104 bytes).
@@ -352,7 +919,11 @@ fn application() -> (gtk::Application, Rc<Shared>) {
 }
 
 fn wait_until(mut check: impl FnMut() -> bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    wait_until_for(std::time::Duration::from_secs(5), &mut check);
+}
+
+fn wait_until_for(timeout: std::time::Duration, mut check: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + timeout;
     let context = glib::MainContext::default();
     while !check() {
         assert!(
@@ -1158,10 +1729,8 @@ fn saved_windows_can_be_deleted() {
             .map(|w| w.id)
             .collect();
         assert_eq!(saved, [first.id.get(), third.id.get()]);
-        assert!(
-            session::scrollback::load(tab).is_none(),
-            "a deleted context's output must go too"
-        );
+        // Cleanup now waits for the deletion's layout write acknowledgment.
+        wait_until(|| session::scrollback::load(tab).unwrap().is_none());
         delete("all");
         assert_eq!(Session::load().into_windows().len(), 1);
         assert_eq!(
@@ -1220,6 +1789,7 @@ fn restart_restores_open_windows_and_retains_closed_contexts() {
             second.window.close();
             first.window.close();
 
+            wait_until(|| first.closing.get());
             let restored = init_shared(&app);
             restore_windows(&restored);
             let windows = restored.windows();
@@ -1328,6 +1898,7 @@ fn the_agents_panel_keeps_its_width() {
         assert_eq!(saved_window(id).agents_width, 500);
         window.window.close();
 
+        wait_until(|| window.closing.get());
         let restored = init_shared(&app);
         restore_windows(&restored);
         let window = &restored.windows()[0];
@@ -1765,11 +2336,12 @@ fn terminal_output_comes_back_after_a_restart() {
         let closed = window.panes.borrow()[&closed_pane].current().unwrap();
         wait_until(|| closed.terminal.export(10).contains("from before"));
         save_output(&shared, &shared.windows());
-        assert!(session::scrollback::load(closed.id).is_some());
+        assert!(session::scrollback::load(closed.id).unwrap().is_some());
         close_tab(&window, &closed_pane, &closed);
         window.window.close();
-        assert!(session::scrollback::load(kept.id).is_some());
-        assert!(session::scrollback::load(closed.id).is_some());
+        wait_until(|| window.closing.get());
+        assert!(session::scrollback::load(kept.id).unwrap().is_some());
+        assert!(session::scrollback::load(closed.id).unwrap().is_some());
 
         let restored = init_shared(&app);
         restored.settings.borrow_mut().shell = Some(shell("after", "after the restart"));
@@ -1816,6 +2388,7 @@ fn restarts_without_typing_dont_pile_up_greetings() {
             save_output(shared, &shared.windows());
             window.close_confirmed.set(true);
             window.window.close();
+            wait_until(|| window.closing.get());
             let restored = init_shared(&app);
             restored.settings.borrow_mut().shell = Some(shell.clone());
             restore_windows(&restored);
@@ -1908,6 +2481,7 @@ fn agents_resume_in_their_tabs_after_a_restart() {
         new_terminal_workspace(&window, None);
         let id = tab.id;
         window.window.close();
+        wait_until(|| window.closing.get());
         let Entry::Workspace(saved) = &saved_window(window.id.get()).sidebar[0] else {
             panic!("workspace not saved")
         };
@@ -1948,6 +2522,7 @@ fn agents_that_never_say_their_session_continue_the_latest() {
             window.close_confirmed.set(true);
             window.window.close();
 
+            wait_until(|| window.closing.get());
             let restored = init_shared(&app);
             restore_windows(&restored);
             let window = &restored.windows()[0];
@@ -2188,7 +2763,7 @@ fn closed_tabs_reopen_with_their_folder_and_output() {
         let tab = window.panes.borrow()[&reopened].current().unwrap();
         assert_eq!(active_workspace(&window).unwrap().tabs.borrow().len(), 2);
         assert_eq!(tab.cwd, folder);
-        assert!(tab.terminal.export(10).contains("hello from before"));
+        wait_until(|| tab.terminal.export(10).contains("hello from before"));
         assert!(shared.session.borrow().closed.is_empty());
         // Nothing left to reopen: nothing happens.
         reopen_tab(&window);
@@ -2535,6 +3110,8 @@ fn bash_marks_its_commands() {
         assert!(tab.terminal.export(10).contains("user-prompt"));
         window.close_confirmed.set(true);
         window.window.close();
+        wait_until(|| window.closing.get());
+        crate::term::wait_for_shutdown();
     });
 }
 
@@ -2571,7 +3148,7 @@ fn closed_workspaces_reopen_and_closed_things_survive_a_restart() {
             assert_eq!(&*window.workspaces.borrow()[&ws].name.borrow(), "Project");
             let pane = workspace_panes(&window, ws)[0].clone();
             let tab = window.panes.borrow()[&pane].current().unwrap();
-            assert!(tab.terminal.export(10).contains("kept output"));
+            wait_until(|| tab.terminal.export(10).contains("kept output"));
             window.close_confirmed.set(true);
             window.window.close();
         },

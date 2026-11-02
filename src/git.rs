@@ -1,6 +1,8 @@
 //! Git operations used by task workspaces. Call on a worker, not the GTK thread.
 //! External diff drivers, pagers, hooks and fsmonitor commands are never run.
 use std::io::Read;
+use std::os::fd::AsRawFd;
+use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -20,7 +22,8 @@ fn run(directory: &Path, args: &[&str]) -> Result<String, String> {
 }
 
 fn output(directory: &Path, args: &[&str]) -> Result<Output, String> {
-    let mut child = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .args([
             "--no-pager",
             "-c",
@@ -34,60 +37,111 @@ fn output(directory: &Path, args: &[&str]) -> Result<Output, String> {
         .current_dir(directory)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("LC_ALL", "C")
+        .env("LC_ALL", "C");
+    collect_output(&mut command, Duration::from_secs(15))
+}
+
+/// The deadline includes both the direct child and EOF on its pipes. Helpers
+/// can leave descendants holding a pipe open after the direct child exits.
+fn collect_output(command: &mut Command, timeout: Duration) -> Result<Output, String> {
+    let mut child = command
+        .process_group(0)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Cannot start Git: {e}"))?;
-    let stdout = child.stdout.take().ok_or("No Git output stream")?;
-    let stderr = child.stderr.take().ok_or("No Git error stream")?;
-    let read = |stream: Box<dyn Read + Send>| {
-        std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            stream
-                .take(LIMIT + 1)
-                .read_to_end(&mut bytes)
-                .map(|_| bytes)
-        })
-    };
-    let out = read(Box::new(stdout));
-    let err = read(Box::new(stderr));
+    let group = child.id();
     let started = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() < Duration::from_secs(15) => {
-                std::thread::sleep(Duration::from_millis(20))
-            }
-            result => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(match result {
-                    Err(e) => format!("Cannot wait for Git: {e}"),
-                    _ => "Git timed out. Inspect the repository before retrying.".into(),
-                });
+    let result = (|| {
+        let mut stdout = child.stdout.take().ok_or("No Git output stream")?;
+        let mut stderr = child.stderr.take().ok_or("No Git error stream")?;
+        for fd in [stdout.as_raw_fd(), stderr.as_raw_fd()] {
+            // SAFETY: the owned pipe remains alive throughout both calls.
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+            {
+                return Err(format!(
+                    "Cannot read Git output: {}",
+                    std::io::Error::last_os_error()
+                ));
             }
         }
-    };
-    let bytes = out
-        .join()
-        .map_err(|_| "Git output reader failed")?
-        .map_err(|e| e.to_string())?;
-    let errors = err
-        .join()
-        .map_err(|_| "Git error reader failed")?
-        .map_err(|e| e.to_string())?;
-    if bytes.len() as u64 > LIMIT || errors.len() as u64 > LIMIT {
-        return Err(
-            "Git output exceeds the 2 MiB limit. Use your Git client for this repository.".into(),
-        );
+        let (mut bytes, mut errors) = (Vec::new(), Vec::new());
+        let (mut out_open, mut err_open) = (true, true);
+        loop {
+            if started.elapsed() >= timeout {
+                return Err("Git timed out. Inspect the repository before retrying.".into());
+            }
+            let out_progress = read_pipe(&mut stdout, &mut bytes, &mut out_open)?;
+            let err_progress = read_pipe(&mut stderr, &mut errors, &mut err_open)?;
+            // Do not reap the leader before both pipes close. Keeping its PID
+            // reserved makes group cleanup safe even if every helper exits
+            // just before a timeout or output-limit error.
+            if !out_open
+                && !err_open
+                && let Some(status) = child
+                    .try_wait()
+                    .map_err(|e| format!("Cannot wait for Git: {e}"))?
+            {
+                return Ok(Output {
+                    status,
+                    stdout: bytes,
+                    stderr: errors,
+                });
+            }
+            if !out_progress && !err_progress {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    })();
+    if result.is_err() {
+        // Git and its helpers have a process group of their own, and its leader
+        // has not been reaped on an error path, so this ID cannot be reused.
+        if let Ok(group) = libc::pid_t::try_from(group) {
+            // SAFETY: group is the positive ID of the group we created.
+            unsafe {
+                libc::kill(-group, libc::SIGKILL);
+            }
+        }
+        let _ = child.kill();
     }
-    Ok(Output {
-        status,
-        stdout: bytes,
-        stderr: errors,
-    })
+    let _ = child.wait();
+    result
+}
+
+/// One bounded read per stream per turn prevents a chatty stdout from
+/// starving stderr or deadline checks.
+fn read_pipe(stream: &mut impl Read, bytes: &mut Vec<u8>, open: &mut bool) -> Result<bool, String> {
+    if !*open {
+        return Ok(false);
+    }
+    let mut chunk = [0; 8192];
+    match stream.read(&mut chunk) {
+        Ok(0) => {
+            *open = false;
+            Ok(false)
+        }
+        Ok(len) => {
+            if bytes.len() as u64 + len as u64 > LIMIT {
+                return Err(
+                    "Git output exceeds the 2 MiB limit. Use your Git client for this repository."
+                        .into(),
+                );
+            }
+            bytes.extend_from_slice(&chunk[..len]);
+            Ok(true)
+        }
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+            ) =>
+        {
+            Ok(false)
+        }
+        Err(e) => Err(format!("Cannot read Git output: {e}")),
+    }
 }
 
 /// The checkout `directory` is in, and its branch (a short commit when
@@ -478,6 +532,48 @@ pub fn changes(directory: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_deadline_includes_pipes_inherited_by_a_descendant() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "sleep 30 & printf 'direct child finished'"]);
+        let started = Instant::now();
+        let result = collect_output(&mut command, Duration::from_millis(150));
+        assert!(result.unwrap_err().contains("timed out"));
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn git_output_bounds_both_streams_and_observes_exit_status() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "printf 'output'; printf 'errors' >&2; exit 7"]);
+        let output = collect_output(&mut command, Duration::from_secs(2)).unwrap();
+        assert_eq!(output.stdout, b"output");
+        assert_eq!(output.stderr, b"errors");
+        assert_eq!(output.status.code(), Some(7));
+        for redirect in ["", " >&2"] {
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", &format!("printf '%2097153s' x{redirect}")]);
+            assert!(
+                collect_output(&mut command, Duration::from_secs(3))
+                    .unwrap_err()
+                    .contains("2 MiB limit")
+            );
+        }
+    }
+
+    #[test]
+    fn git_deadline_kills_and_reaps_a_stalled_direct_child() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "exec sleep 30"]);
+        let started = Instant::now();
+        assert!(
+            collect_output(&mut command, Duration::from_millis(100))
+                .unwrap_err()
+                .contains("timed out")
+        );
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
 
     #[test]
     fn checkouts_and_branches_are_read_from_files() {

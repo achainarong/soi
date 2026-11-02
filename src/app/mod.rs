@@ -139,6 +139,7 @@ struct Tab {
     cwd: PathBuf,
     /// `TermView::output_serial` when the output was last saved.
     saved_output: Cell<u64>,
+    output_save: RefCell<Option<(u64, crate::dirs::SaveReceipt)>>,
     /// Restored, and nothing happened since but the shell starting: its saved
     /// output stays as it is (else each restart adds a greeting to it).
     untouched: Cell<bool>,
@@ -174,6 +175,13 @@ struct Shared {
     session: RefCell<Session>,
     /// Retry failed saves, and persist legacy sessions with new identities.
     session_dirty: Cell<bool>,
+    session_save: RefCell<Option<(Session, crate::dirs::SaveReceipt)>>,
+    persisted_session: RefCell<Option<Session>>,
+    recovery_error: Option<String>,
+    save_warning_shown: Cell<bool>,
+    save_failure: RefCell<Option<String>>,
+    shutting_down: Cell<bool>,
+    task_views: RefCell<Vec<Weak<task_view::View>>>,
     settings: RefCell<Settings>,
     /// Detected theme with the user's settings applied on top.
     theme: RefCell<TerminalTheme>,
@@ -333,7 +341,8 @@ pub fn run() -> glib::ExitCode {
     let shutdown = shared.clone();
     app.connect_activate(move |app| match shared.get() {
         // Started again while running (e.g. from the app menu).
-        Some(shared) => reopen_last(shared),
+        Some(shared) if !shared.shutting_down.get() => reopen_last(shared),
+        Some(_) => {}
         None => {
             let shared = shared.get_or_init(|| init_shared(app));
             panel::listen(shared);
@@ -351,7 +360,13 @@ pub fn run() -> glib::ExitCode {
     }
     crate::term::wait_for_shutdown();
     // Saves still queued on the writer thread would die with the process.
-    crate::dirs::flush();
+    if !shutdown
+        .get()
+        .is_some_and(|shared| shared.shutting_down.get())
+        && let Err(error) = crate::dirs::flush_timeout(std::time::Duration::from_secs(5))
+    {
+        crate::log::write(&error);
+    }
     result
 }
 
@@ -418,11 +433,24 @@ fn init_shared(app: &gtk::Application) -> Rc<Shared> {
     let profile = settings::active_profile();
     let settings = Settings::load_profile(&profile);
     let theme = effective_theme(&settings);
-    let session = Session::restored();
+    let (session, recovery_error) = match Session::try_restored() {
+        Ok(session) => (session, None),
+        Err(error) => {
+            crate::log::write(&error);
+            (Session::default(), Some(error))
+        }
+    };
     let zoom = session
         .zoom
         .map_or(1.0, |zoom| zoom.clamp(MIN_ZOOM, MAX_ZOOM));
     let shared = Rc::new(Shared {
+        persisted_session: RefCell::new(recovery_error.is_none().then(|| session.clone())),
+        session_save: RefCell::default(),
+        recovery_error,
+        save_warning_shown: Cell::new(false),
+        save_failure: RefCell::default(),
+        shutting_down: Cell::new(false),
+        task_views: RefCell::default(),
         windows: RefCell::default(),
         session: RefCell::new(session),
         session_dirty: Cell::new(true),
@@ -449,11 +477,17 @@ fn init_shared(app: &gtk::Application) -> Rc<Shared> {
     let ticks = Cell::new(0u32);
     glib::timeout_add_local(SAVE_INTERVAL, move || match weak.upgrade() {
         Some(shared) => {
+            if shared.shutting_down.get() {
+                return glib::ControlFlow::Continue;
+            }
+            crate::dirs::retry_pending(false);
+            persistence_warning(&shared);
             let check = ticks.get().is_multiple_of(SAVE_CHECK_EVERY);
             ticks.set(ticks.get().wrapping_add(1));
             if check || shared.session_dirty.get() {
                 let started = std::time::Instant::now();
                 save_all(&shared);
+                prune_output(&shared);
                 crate::log::if_slow("session save", started);
             }
             glib::ControlFlow::Continue
@@ -463,7 +497,9 @@ fn init_shared(app: &gtk::Application) -> Rc<Shared> {
     let weak = Rc::downgrade(&shared);
     glib::timeout_add_local(OUTPUT_SAVE_INTERVAL, move || match weak.upgrade() {
         Some(shared) => {
-            save_output_gradually(&shared);
+            if !shared.shutting_down.get() {
+                save_output_gradually(&shared);
+            }
             glib::ControlFlow::Continue
         }
         None => glib::ControlFlow::Break,
@@ -495,6 +531,9 @@ fn init_shared(app: &gtk::Application) -> Rc<Shared> {
 /// closing the windows one by one, all of them come back next time. Asks
 /// first when programs would be stopped.
 fn quit(shared: &Rc<Shared>) {
+    if shared.shutting_down.get() {
+        return;
+    }
     let windows = shared.windows();
     let Some(front) = windows
         .iter()
@@ -518,16 +557,250 @@ fn quit(shared: &Rc<Shared>) {
     });
 }
 
-/// Saves every window's layout and output, then quits.
-fn save_and_quit(shared: &Shared) {
-    save_all(shared);
-    save_output(shared, &shared.windows());
+/// Saves every window's layout and output without blocking the GTK main loop.
+fn save_and_quit(shared: &Rc<Shared>) {
+    if shared.shutting_down.replace(true) {
+        return;
+    }
+    for state in shared.windows() {
+        finish_inline_renames(&state, true);
+    }
+    let dialog = gtk::Window::builder()
+        .title("Saving Soi")
+        .css_classes(["soi-tools", "soi-saving"])
+        .modal(true)
+        .resizable(false)
+        .default_width(380)
+        .build();
+    if let Some(app) = gio::Application::default().and_downcast::<gtk::Application>() {
+        dialog.set_application(Some(&app));
+    }
+    if let Some(front) = shared.windows().first() {
+        dialog.set_transient_for(Some(&front.window));
+    }
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 16);
+    content.set_margin_top(24);
+    content.set_margin_bottom(24);
+    content.set_margin_start(24);
+    content.set_margin_end(24);
+    let spinner = gtk::Spinner::new();
+    let label = gtk::Label::builder()
+        .label("Saving layouts and terminal output…")
+        .wrap(true)
+        .max_width_chars(55)
+        .build();
+    let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    buttons.set_halign(gtk::Align::End);
+    let retry = gtk::Button::with_label("Retry");
+    let discard = gtk::Button::with_label("Quit without saving");
+    let cancel = gtk::Button::with_label("Cancel quitting");
+    retry.set_visible(false);
+    discard.set_visible(false);
+    cancel.set_visible(false);
+    buttons.append(&cancel);
+    buttons.append(&discard);
+    buttons.append(&retry);
+    content.append(&spinner);
+    content.append(&label);
+    content.append(&buttons);
+    dialog.set_child(Some(&content));
+    dialog.connect_close_request(|_| glib::Propagation::Stop);
+    set_shutdown_sensitive(shared, false);
+    let weak = Rc::downgrade(shared);
+    let (window, label_retry, spinner_retry, discard_retry, cancel_retry) = (
+        dialog.downgrade(),
+        label.clone(),
+        spinner.clone(),
+        discard.clone(),
+        cancel.clone(),
+    );
+    retry.connect_clicked(move |retry| {
+        if let (Some(shared), Some(window)) = (weak.upgrade(), window.upgrade()) {
+            shutdown_attempt(
+                &shared,
+                &window,
+                &label_retry,
+                &spinner_retry,
+                retry,
+                &discard_retry,
+                &cancel_retry,
+            );
+        }
+    });
+    let weak = Rc::downgrade(shared);
+    let window = dialog.downgrade();
+    discard.connect_clicked(move |_| {
+        if let (Some(shared), Some(window)) = (weak.upgrade(), window.upgrade()) {
+            finish_shutdown(&shared, &window);
+        }
+    });
+    let weak = Rc::downgrade(shared);
+    let window = dialog.downgrade();
+    cancel.connect_clicked(move |_| {
+        if let (Some(shared), Some(window)) = (weak.upgrade(), window.upgrade()) {
+            shared.shutting_down.set(false);
+            for state in shared.windows() {
+                state.close_confirmed.set(false);
+            }
+            set_shutdown_sensitive(&shared, true);
+            window.destroy();
+        }
+    });
+    dialog.present();
+    shutdown_attempt(shared, &dialog, &label, &spinner, &retry, &discard, &cancel);
+}
+
+fn set_shutdown_sensitive(shared: &Shared, sensitive: bool) {
+    for state in shared.windows() {
+        if let Some(child) = state.window.child() {
+            child.set_sensitive(sensitive);
+        }
+    }
+    for view in shared.task_views.borrow().iter().filter_map(Weak::upgrade) {
+        if let Some(child) = view.window.child() {
+            child.set_sensitive(sensitive);
+        }
+    }
+}
+
+async fn save_open_plans(shared: &Shared) -> Result<(), String> {
+    let plans = shared
+        .windows()
+        .iter()
+        .flat_map(|state| {
+            state
+                .workspaces
+                .borrow()
+                .values()
+                .filter_map(|ws| ws.plan_panel.borrow().clone())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let views = shared
+        .task_views
+        .borrow()
+        .iter()
+        .filter_map(Weak::upgrade)
+        .collect::<Vec<_>>();
+    for plan in plans {
+        plan.save_for_shutdown().await?;
+    }
+    for view in views {
+        task_view::save_for_shutdown(&view).await?;
+    }
+    Ok(())
+}
+
+fn shutdown_attempt(
+    shared: &Rc<Shared>,
+    dialog: &gtk::Window,
+    label: &gtk::Label,
+    spinner: &gtk::Spinner,
+    retry: &gtk::Button,
+    discard: &gtk::Button,
+    cancel: &gtk::Button,
+) {
+    spinner.start();
+    spinner.set_visible(true);
+    label.set_label("Saving plans, layouts and terminal output…");
+    retry.set_visible(false);
+    discard.set_visible(false);
+    cancel.set_visible(false);
+    let weak = Rc::downgrade(shared);
+    let (dialog, label, spinner, retry, discard, cancel) = (
+        dialog.clone(),
+        label.clone(),
+        spinner.clone(),
+        retry.clone(),
+        discard.clone(),
+        cancel.clone(),
+    );
+    glib::spawn_future_local(async move {
+        let result = glib::future_with_timeout(std::time::Duration::from_secs(5), async {
+            let shared = weak
+                .upgrade()
+                .ok_or("The application closed while saving.")?;
+            save_open_plans(&shared).await?;
+            save_all(&shared);
+            save_output(&shared, &shared.windows());
+            crate::dirs::retry_pending(true);
+            gio::spawn_blocking(|| crate::dirs::flush_timeout(std::time::Duration::from_secs(5)))
+                .await
+                .map_err(|_| "The save worker stopped unexpectedly.".to_string())??;
+            acknowledge_session(&shared);
+            if let Some(error) = shared
+                .recovery_error
+                .clone()
+                .or_else(|| shared.save_failure.borrow().clone())
+            {
+                return Err(error);
+            }
+            if shared.session_dirty.get() {
+                return Err("The latest session layout has not been saved.".into());
+            }
+            Ok(())
+        })
+        .await;
+        let Some(shared) = weak.upgrade() else {
+            dialog.destroy();
+            return;
+        };
+        let error = match result {
+            Ok(Ok(())) => {
+                finish_shutdown(&shared, &dialog);
+                return;
+            }
+            Ok(Err(error)) => error,
+            Err(_) => "Saving exceeded the five-second deadline. The disk operation may still finish in the background.".into(),
+        };
+        spinner.stop();
+        spinner.set_visible(false);
+        label.set_label(&format!(
+            "Saving could not finish. Your unsaved changes may be lost if you quit.\n\n{error}"
+        ));
+        retry.set_visible(shared.recovery_error.is_none());
+        discard.set_visible(true);
+        cancel.set_visible(true);
+    });
+}
+
+fn finish_shutdown(shared: &Shared, dialog: &gtk::Window) {
+    dialog.destroy();
     for window in shared.windows() {
+        release_terminals(&window);
         window.closing.set(true);
+        window.window.close();
     }
     if let Some(app) = gio::Application::default() {
         app.quit();
     }
+}
+
+fn persistence_warning(shared: &Shared) {
+    let error = shared
+        .recovery_error
+        .clone()
+        .or_else(|| shared.save_failure.borrow().clone())
+        .or_else(crate::dirs::save_error);
+    let Some(error) = error else {
+        shared.save_warning_shown.set(false);
+        return;
+    };
+    if shared.save_warning_shown.replace(true) {
+        return;
+    }
+    let detail = if shared.recovery_error.is_some() {
+        format!(
+            "{error}\n\nThe original session and saved output are preserved. Automatic layout saving and output cleanup are disabled for this run. Repair or back up the session file, then restart Soi."
+        )
+    } else {
+        format!("{error}\n\nSoi will retry automatically. Changes are not yet safely saved.")
+    };
+    gtk::AlertDialog::builder()
+        .message("Soi could not save or restore your session")
+        .detail(detail)
+        .build()
+        .show(shared.windows().first().map(|state| &state.window));
 }
 
 /// `~/foo` for paths under the home directory.

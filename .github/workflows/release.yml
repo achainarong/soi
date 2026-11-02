@@ -2,7 +2,8 @@ name: Release
 
 # Pushing a tag like v0.2.0 builds soi 0.2.0 with GTK inside for Linux
 # (amd64, arm64) and macOS (Apple Silicon), and publishes them as a GitHub
-# release. Changes to the packaging, and runs by hand, only build them.
+# release only after packaged-binary integration tests pass. Changes to
+# packaging, and runs by hand, build and test without publishing.
 on:
   push:
     tags: ["v*"]
@@ -15,6 +16,13 @@ on:
   workflow_dispatch:
 
 jobs:
+  test-harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Test the release test harness
+        run: python3 -m unittest discover -s scripts -p 'test_test_release.py' -v
+
   linux:
     strategy:
       matrix:
@@ -80,17 +88,120 @@ jobs:
           path: target/soi-macos-arm64.zip
           if-no-files-found: error
 
+  test-linux:
+    needs: [linux, test-harness]
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: ubuntu-latest
+            image: ubuntu:latest
+            runner: ubuntu-latest
+            artifact: linux-X64
+            arch: x86_64
+            install: apt-get update && apt-get install -y python3 xvfb xauth xdotool dbus-x11 libgl1 libegl1 libxkbcommon0 fonts-dejavu-core
+          - distro: ubuntu-24.04
+            image: ubuntu:24.04
+            runner: ubuntu-latest
+            artifact: linux-X64
+            arch: x86_64
+            install: apt-get update && apt-get install -y python3 xvfb xauth xdotool dbus-x11 libgl1 libegl1 libxkbcommon0 fonts-dejavu-core
+          - distro: ubuntu-latest-arm64
+            image: ubuntu:latest
+            runner: ubuntu-24.04-arm
+            artifact: linux-ARM64
+            arch: aarch64
+            install: apt-get update && apt-get install -y python3 xvfb xauth xdotool dbus-x11 libgl1 libegl1 libxkbcommon0 fonts-dejavu-core
+          - distro: debian-stable
+            image: debian:stable
+            runner: ubuntu-latest
+            artifact: linux-X64
+            arch: x86_64
+            install: apt-get update && apt-get install -y python3 xvfb xauth xdotool dbus-x11 libgl1 libegl1 libxkbcommon0 fonts-dejavu-core
+          - distro: fedora-latest
+            image: fedora:latest
+            runner: ubuntu-latest
+            artifact: linux-X64
+            arch: x86_64
+            install: dnf install -y python3 xorg-x11-server-Xvfb xorg-x11-xauth xdotool dbus-daemon dbus-x11 mesa-libGL mesa-libEGL libxkbcommon dejavu-sans-fonts
+          - distro: arch-rolling
+            image: archlinux:latest
+            runner: ubuntu-latest
+            artifact: linux-X64
+            arch: x86_64
+            install: pacman -Syu --noconfirm python xorg-server-xvfb xorg-xauth xdotool dbus mesa libxkbcommon ttf-dejavu
+    runs-on: ${{ matrix.runner }}
+    name: Packaged binary (${{ matrix.distro }})
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist
+      - name: Run AppImage in a clean distro without system GTK
+        env:
+          IMAGE: ${{ matrix.image }}
+          INSTALL: ${{ matrix.install }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p release-test-logs
+          chmod +x "dist/soi-$ARCH.AppImage"
+          set -o pipefail
+          docker run --rm --volume "$PWD:/work" --workdir /work \
+            --env INSTALL --env ARCH "$IMAGE" sh -ec '
+              eval "$INSTALL"
+              cat /etc/os-release
+              dbus-run-session -- xvfb-run -a python3 scripts/test_release.py \
+                "dist/soi-$ARCH.AppImage" --logs release-test-logs
+            ' 2>&1 | tee release-test-logs/container.log
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: test-logs-${{ matrix.distro }}
+          path: release-test-logs
+
+  test-macos:
+    needs: [macos, test-harness]
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          name: macos-arm64
+          path: dist
+      - name: Run the extracted app bundle
+        run: |
+          mkdir -p release-test-logs
+          ditto -x -k dist/soi-macos-arm64.zip dist
+          codesign --verify --deep --strict dist/soi.app
+          set -o pipefail
+          python3 scripts/test_release.py dist/soi.app/Contents/MacOS/soi \
+            --logs release-test-logs 2>&1 | tee release-test-logs/harness.log
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: test-logs-macos
+          path: release-test-logs
+
   release:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [linux, macos]
+    needs: [linux, macos, test-linux, test-macos]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v7
         with:
+          pattern: linux-*
           path: dist
           merge-multiple: true
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: macos-arm64
+          path: dist
 
       - name: Publish the release
         env:

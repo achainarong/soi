@@ -214,8 +214,10 @@ pub(super) fn save_plan(view: &Rc<View>, done: impl FnOnce(bool) + 'static) {
                 Ok(()) => {
                     set_base(&view, Some(written));
                     update_dirty(&view);
-                    view.plan.status.set_label("Plan saved.");
-                    done(true);
+                    if !view.plan.dirty.get() {
+                        view.plan.status.set_label("Plan saved.");
+                    }
+                    done(!view.plan.dirty.get());
                 }
                 Err(SaveError::Conflict(disk)) => {
                     show_conflict(&view, disk);
@@ -230,6 +232,23 @@ pub(super) fn save_plan(view: &Rc<View>, done: impl FnOnce(bool) + 'static) {
             }
         },
     );
+}
+
+pub(super) async fn save_for_shutdown(view: &Rc<View>) -> Result<(), String> {
+    while view.plan.saving.get() {
+        glib::timeout_future(std::time::Duration::from_millis(10)).await;
+    }
+    if !view.plan.dirty.get() {
+        return Ok(());
+    }
+    let (send, receive) = async_channel::bounded(1);
+    save_plan(view, move |saved| {
+        let _ = send.try_send(saved);
+    });
+    match receive.recv().await {
+        Ok(true) => Ok(()),
+        _ => Err("A task's plan could not be saved. Cancel quitting to resolve its conflict or save error; your edits are still in Task details.".into()),
+    }
 }
 
 /// Follows external edits: a clean editor reloads, a dirty one asks.
